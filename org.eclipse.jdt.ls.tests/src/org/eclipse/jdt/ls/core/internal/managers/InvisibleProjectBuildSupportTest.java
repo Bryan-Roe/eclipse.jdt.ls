@@ -34,6 +34,7 @@ import org.apache.commons.io.FileUtils;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.IPath;
+import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.jobs.IJobChangeEvent;
 import org.eclipse.core.runtime.jobs.IJobChangeListener;
 import org.eclipse.core.runtime.jobs.Job;
@@ -244,9 +245,15 @@ public class InvisibleProjectBuildSupportTest extends AbstractInvisibleProjectBa
 	@Test
 	public void testVariableReferenceLibraries() throws Exception {
 		ReferencedLibraries libraries = new ReferencedLibraries();
-		libraries.getInclude().add("~/lib/foo.jar");
-		libraries.getExclude().add("~/lib/bar.jar");
-		libraries.getSources().put("~/library/bar.jar", "~/library/sources/bar-src.jar");
+		if (Platform.OS_WIN32.equals(Platform.getOS())) {
+			libraries.getInclude().add("~\\lib\\foo.jar");
+			libraries.getExclude().add("~\\lib\\bar.jar");
+			libraries.getSources().put("~\\library\\bar.jar", "~\\library\\sources/bar-src.jar");
+		} else {
+			libraries.getInclude().add("~/lib/foo.jar");
+			libraries.getExclude().add("~/lib/bar.jar");
+			libraries.getSources().put("~/library/bar.jar", "~/library/sources/bar-src.jar");
+		}
 		assertTrue(libraries.getInclude().iterator().next().startsWith(System.getProperty("user.home")));
 		assertTrue(libraries.getExclude().iterator().next().startsWith(System.getProperty("user.home")));
 		libraries.getSources().forEach((k, v) -> {
@@ -528,16 +535,32 @@ public class InvisibleProjectBuildSupportTest extends AbstractInvisibleProjectBa
 		TextDocumentPositionParams position = getParams(payload);
 
 		// perform hover
+		int retries = 0;
 		HoverHandler handler = new HoverHandler(preferenceManager);
-		Hover hover = handler.hover(position, monitor);
-		if (hover.getContents().getLeft().size() < 2) {
-			JobHelpers.waitForDownloadSourcesJobs(JobHelpers.MAX_TIME_MILLIS);
-			waitForBackgroundJobs();
+		Hover hover = null;
+		while (remark.getSourceAttachmentPath() == null && retries++ < 3) {
+			File lastUpdated = new File(remarkFile.getParentFile(), "m2e-lastUpdated.properties");
+			if (lastUpdated.exists()) {
+				FileUtils.forceDelete(lastUpdated);
+			}
+			String timeoutStr = System.getProperty("java.lsp.mavensearch.timeout", "10");
+			long timeout;
+			try {
+				timeout = Long.parseLong(timeoutStr);
+			} catch (Exception e) {
+				timeout = 10;
+			}
+			timeout = timeout * retries;
+			System.setProperty("java.lsp.mavensearch.timeout", String.valueOf(timeout));
 			hover = handler.hover(position, monitor);
+			if (hover.getContents().getLeft().size() < 2) {
+				JobHelpers.waitForDownloadSourcesJobs(JobHelpers.MAX_TIME_MILLIS);
+				waitForBackgroundJobs();
+				hover = handler.hover(position, monitor);
+			}
+			remark = JavaProjectHelper.findJarEntry(javaProject, "remark.jar");
 		}
-
 		// verify library has source attachment
-		remark = JavaProjectHelper.findJarEntry(javaProject, "remark.jar");
 		assertNotNull(remark.getSourceAttachmentPath());
 		assertNotNull(hover);
 		String javadoc = hover.getContents().getLeft().get(1).getLeft();

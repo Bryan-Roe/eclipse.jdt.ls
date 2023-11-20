@@ -36,7 +36,6 @@ import org.eclipse.lsp4j.ShowMessageRequestParams;
 import org.eclipse.lsp4j.UnregistrationParams;
 import org.eclipse.lsp4j.WorkspaceEdit;
 import org.eclipse.lsp4j.jsonrpc.services.JsonNotification;
-import org.eclipse.lsp4j.jsonrpc.services.JsonRequest;
 import org.eclipse.lsp4j.services.LanguageClient;
 
 import com.google.common.collect.ImmutableList;
@@ -75,16 +74,10 @@ public class JavaClientConnection {
 		@JsonNotification("language/progressReport")
 		void sendProgressReport(ProgressReport report);
 
-		// TODO : remove this method when LSP4J will provide InlayHint support. See
-		// https://github.com/eclipse/lsp4j/issues/570
-		@JsonRequest("workspace/inlayHint/refresh")
-		default CompletableFuture<Void> refreshInlayHints() {
-			throw new UnsupportedOperationException();
-		}
 	}
 
 	private final LogHandler logHandler;
-	private final JavaLanguageClient client;
+	final JavaLanguageClient client;
 
 	public JavaClientConnection(JavaLanguageClient client) {
 		this.client = client;
@@ -156,16 +149,6 @@ public class JavaClientConnection {
 	}
 
 	/**
-	 * Sends a progress report to the client to be presented to users
-	 *
-	 * @param progressReport
-	 *            The progress report to send back to the client
-	 */
-	public void sendProgressReport(ProgressReport progressReport) {
-		client.sendProgressReport(progressReport);
-	}
-
-	/**
 	 * Sends a message to the client to be presented to users, with possible
 	 * commands to execute
 	 */
@@ -230,8 +213,6 @@ public class JavaClientConnection {
 		return this.client.configuration(configurationParams).join();
 	}
 
-	// TODO : remove this method when LSP4J will provide InlayHint support. See
-	// https://github.com/eclipse/lsp4j/issues/570
 	public CompletableFuture<Void> refreshInlayHints() {
 		return this.client.refreshInlayHints();
 	}
@@ -242,4 +223,10 @@ public class JavaClientConnection {
 		}
 	}
 
+	public void telemetryEvent(Object object) {
+		if (JavaLanguageServerPlugin.getPreferencesManager() != null
+			&& JavaLanguageServerPlugin.getPreferencesManager().getPreferences().isTelemetryEnabled()) {
+			client.telemetryEvent(object);
+		}
+	}
 }

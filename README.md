@@ -1,4 +1,4 @@
-[![Build Status](https://ci.eclipse.org/ls/buildStatus/icon?job=jdt-ls-master)](https://ci.eclipse.org/ls/job/jdt-ls-master)
+[![Build Status](https://img.shields.io/jenkins/tests?jobUrl=https%3A%2F%2Fci.eclipse.org%2Fls%2Fjob%2Fjdt-ls-master%2F&logo=jenkins&logoColor=white&style=for-the-badge)](https://ci.eclipse.org/ls/job/jdt-ls-master)
 
 Eclipse JDT Language Server
 ===========================
@@ -13,9 +13,9 @@ and can be used with any editor that supports the protocol, to offer good suppor
 
 Features
 --------------
-* Supports compiling projects from Java 1.5 through 16
+* Supports compiling projects from Java 1.5 through 19
 * Maven pom.xml project support
-* Limited Gradle support (Android projects are not supported)
+* Gradle project support (with experimental Android project import support)
 * Standalone Java files support
 * As-you-type reporting of syntax and compilation errors
 * Code completion
@@ -39,6 +39,11 @@ Features
 * Extensibility
 
 
+Requirements
+------------
+
+The language server requires a runtime environment of **Java 17** (at a minimum) to run. This should either be set in the `JAVA_HOME` environment variable, or on the user's path.
+
 Installation
 ------------
 
@@ -47,7 +52,7 @@ There are several options to install eclipse.jdt.ls:
 - Download and extract a milestone build from [http://download.eclipse.org/jdtls/milestones/](http://download.eclipse.org/jdtls/milestones/?d)
 - Download and extract a snapshot build from [http://download.eclipse.org/jdtls/snapshots/](http://download.eclipse.org/jdtls/snapshots/?d)
 - Under some Linux distributions you can use the package manager. Search the package repositories for `jdtls` or `eclipse.jdt.ls`.
-- Build it from source. Clone the repository via `git clone` and build the project via `JAVA_HOME=/path/to/java/11 ./mvnw clean verify`. Optionally append `-DskipTests=true` to by-pass the tests. This command builds the server into the `./org.eclipse.jdt.ls.product/target/repository` folder.
+- Build it from source. Clone the repository via `git clone` and build the project via `JAVA_HOME=/path/to/java/17 ./mvnw clean verify`. Optionally append `-DskipTests=true` to by-pass the tests. This command builds the server into the `./org.eclipse.jdt.ls.product/target/repository` folder.
 
 Some editors or editor extensions bundle eclipse.jdt.ls or contain logic to install it. If that is the case, you only need to install the editor extension. For example for Visual Studio Code you can install the [Extension Pack for Java](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-pack) and it will take care of the rest.
 
@@ -65,7 +70,6 @@ java \
 	-Dosgi.bundles.defaultStartLevel=4 \
 	-Declipse.product=org.eclipse.jdt.ls.core.product \
 	-Dlog.level=ALL \
-	-noverify \
 	-Xmx1G \
 	--add-modules=ALL-SYSTEM \
 	--add-opens java.base/java.util=ALL-UNNAMED \
@@ -136,9 +140,11 @@ This repository only contains the server implementation. Here are some known cli
 * [Oni](https://github.com/onivim/oni/wiki/Language-Support#java) : modern modal editing - powered by Neovim.
 * [LSP Java](https://github.com/emacs-lsp/lsp-java) : a Java LSP client for Emacs
 * [Eclipse Theia](https://github.com/theia-ide/theia) : Theia is a cloud & desktop IDE framework implemented in TypeScript
+* [Eclipse IDE JDT.LS](https://github.com/redhat-developer/eclipseide-jdtls/) : an extension for Eclipse IDE
 * [coc-java](https://github.com/neoclide/coc-java) : an extension for [coc.nvim](https://github.com/neoclide/coc.nvim)
 * [MS Paint IDE](https://github.com/MSPaintIDE/MSPaintIDE) : an IDE for programming in MS Paint
 * [nvim-jdtls](https://github.com/mfussenegger/nvim-jdtls) : an extension for Neovim
+* [multilspy from monitors4codegen](https://github.com/microsoft/monitors4codegen#4-multilspy) : A language-agnostic LSP client in Python, with a library interface. Intended to be used to build applications around language servers
 
 Continuous Integration Builds
 -----------------------------

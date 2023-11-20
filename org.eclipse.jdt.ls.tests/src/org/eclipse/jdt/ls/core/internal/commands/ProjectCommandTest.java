@@ -25,6 +25,9 @@ import java.util.List;
 import java.util.Map;
 
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.runtime.IPath;
+import org.eclipse.core.runtime.Path;
+import org.eclipse.core.runtime.Platform;
 import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IType;
@@ -97,9 +100,11 @@ public class ProjectCommandTest extends AbstractInvisibleProjectBasedTest {
         List<String> settingKeys = Arrays.asList(ProjectCommand.SOURCE_PATHS);
         Map<String, Object> options = ProjectCommand.getProjectSettings(linkedFolder, settingKeys);
         String[] actualSourcePaths = (String[]) options.get(ProjectCommand.SOURCE_PATHS);
-        String expectedSourcePath = project.getFolder(ProjectUtils.WORKSPACE_LINK).getFolder("src").getLocation().toOSString();
-        assertTrue(actualSourcePaths.length == 1);
-        assertEquals(expectedSourcePath, actualSourcePaths[0]);
+        assertTrue(actualSourcePaths.length == 2);
+        assertTrue(Arrays.stream(actualSourcePaths).anyMatch(sourcePath -> {
+            return sourcePath.equals(project.getFolder(ProjectUtils.WORKSPACE_LINK).getFolder("src").getLocation().toOSString())
+                    || sourcePath.equals(project.getFolder(ProjectUtils.WORKSPACE_LINK).getFolder("test").getLocation().toOSString());
+        }));
     }
 
     @Test
@@ -122,7 +127,19 @@ public class ProjectCommandTest extends AbstractInvisibleProjectBasedTest {
         String[] actualReferencedLibraryPaths = (String[]) options.get(ProjectCommand.REFERENCED_LIBRARIES);
         String expectedReferencedLibraryPath = project.getFolder(ProjectUtils.WORKSPACE_LINK).getFolder("lib").getFile("mylib.jar").getLocation().toOSString();
         assertTrue(actualReferencedLibraryPaths.length == 1);
-        assertEquals(expectedReferencedLibraryPath, actualReferencedLibraryPaths[0]);
+		if (Platform.OS_WIN32.equals(Platform.getOS())) {
+			IPath expected = new Path(expectedReferencedLibraryPath);
+			IPath actual = new Path(actualReferencedLibraryPaths[0]);
+			if (expected.getDevice() != null) {
+				expected = expected.setDevice(expected.getDevice().toLowerCase());
+			}
+			if (actual.getDevice() != null) {
+				actual = actual.setDevice(actual.getDevice().toLowerCase());
+			}
+			assertTrue(expected.equals(actual));
+		} else {
+			assertEquals(expectedReferencedLibraryPath, actualReferencedLibraryPaths[0]);
+		}
     }
 
     @Test
@@ -208,10 +225,14 @@ public class ProjectCommandTest extends AbstractInvisibleProjectBasedTest {
         IProject project = WorkspaceHelper.getProject("simple-gradle");
         String uriString = project.getFile("src/main/java/Library.java").getLocationURI().toString();
         ClasspathOptions options = new ClasspathOptions();
-        // Gradle project will always return classpath containing test dependencies.
-        // So we only test `scope = "test"` scenario.
-        options.scope = "test";
+        options.scope = "runtime";
         ClasspathResult result = ProjectCommand.getClasspaths(uriString, options);
+        assertEquals(3, result.classpaths.length);
+        assertEquals(0, result.modulepaths.length);
+        assertTrue(result.classpaths[0].indexOf("junit") == -1);
+
+        options.scope = "test";
+        result = ProjectCommand.getClasspaths(uriString, options);
         assertEquals(5, result.classpaths.length);
         assertEquals(0, result.modulepaths.length);
         boolean containsJunit = Arrays.stream(result.classpaths).anyMatch(element -> {

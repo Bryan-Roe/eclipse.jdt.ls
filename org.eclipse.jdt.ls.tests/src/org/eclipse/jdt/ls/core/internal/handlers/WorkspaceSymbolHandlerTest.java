@@ -19,7 +19,9 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.when;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -112,9 +114,10 @@ public class WorkspaceSymbolHandlerTest extends AbstractProjectsManagerBasedTest
 		List<SymbolInformation> results = WorkspaceSymbolHandler.search(query, monitor);
 		assertNotNull(results);
 		assertEquals("Found " + results.size() + " results", 2, results.size());
+		assertTrue(results.stream().anyMatch(s -> "org.sample".equals(s.getContainerName())));
+		assertTrue(results.stream().anyMatch(s -> "java".equals(s.getContainerName())));
 		SymbolInformation symbol = results.get(0);
 		assertEquals(SymbolKind.Interface, symbol.getKind());
-		assertEquals("java", symbol.getContainerName());
 		assertEquals(query, symbol.getName());
 		Location location = symbol.getLocation();
 		assertNotEquals("Range should not equal the default range", JDTUtils.newRange(), location.getRange());
@@ -185,6 +188,24 @@ public class WorkspaceSymbolHandlerTest extends AbstractProjectsManagerBasedTest
 		results = WorkspaceSymbolHandler.search("*.lang*.*exception", monitor);
 		assertTrue(results.size() > 1);
 		assertTrue(results.stream().allMatch(s -> s.getName().endsWith("Exception") && s.getContainerName().contains(".lang")));
+	}
+
+	@Test
+	public void testSearchAllTypesOfPackage() {
+		List<SymbolInformation> results = WorkspaceSymbolHandler.search("java.io", monitor);
+		assertTrue(results.size() > 1);
+		assertTrue(results.stream().anyMatch(s -> "File".equals(s.getName()) && "java.io".equals(s.getContainerName())));
+
+		results = WorkspaceSymbolHandler.search("java.lang", monitor);
+		assertTrue(results.size() > 1);
+		assertTrue(results.stream().anyMatch(s -> "Exception".equals(s.getName()) && "java.lang".equals(s.getContainerName())));
+	}
+
+	@Test
+	public void testSearchWithoutDuplicate() {
+		List<SymbolInformation> results = WorkspaceSymbolHandler.search("*", monitor);
+		Set<SymbolInformation> resultsSet = new HashSet<>(results);
+		assertEquals(results.size(), resultsSet.size());
 	}
 
 	@Test

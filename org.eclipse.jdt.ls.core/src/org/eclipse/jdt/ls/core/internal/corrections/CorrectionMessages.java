@@ -70,6 +70,7 @@ public final class CorrectionMessages extends NLS {
 	public static String QuickAssistProcessor_name_extension_from_interface;
 	public static String QuickAssistProcessor_convert_to_static_import;
 	public static String QuickAssistProcessor_convert_to_static_import_replace_all;
+	public static String RefactorProcessor_extract_interface;
 	public static String SerialVersionHashOperation_computing_id;
 	public static String SerialVersionHashOperation_error_classnotfound;
 	public static String SerialVersionHashOperation_save_caption;
@@ -234,6 +235,7 @@ public final class CorrectionMessages extends NLS {
 	public static String UnresolvedElementsSubProcessor_arraychangetomethod_description;
 	public static String UnresolvedElementsSubProcessor_arraychangetolength_description;
 	public static String UnresolvedElementsSubProcessor_addnewkeyword_description;
+	public static String UnresolvedElementsSubProcessor_add_allMissing_imports_description;
 	public static String JavadocTagsSubProcessor_addjavadoc_method_description;
 	public static String JavadocTagsSubProcessor_addjavadoc_type_description;
 	public static String JavadocTagsSubProcessor_addjavadoc_field_description;
@@ -312,6 +314,8 @@ public final class CorrectionMessages extends NLS {
 	public static String NewCUCompletionUsingWizardProposal_dialogtitle;
 	public static String NewCUCompletionUsingWizardProposal_tooltip_enclosingtype;
 	public static String NewCUCompletionUsingWizardProposal_tooltip_package;
+
+	public static String NotAccessibleType_upgrade_Gradle_label;
 
 	public static String JavaCorrectionProcessor_addquote_description;
 	public static String JavaCorrectionProcessor_error_quickfix_message;
@@ -398,6 +402,7 @@ public final class CorrectionMessages extends NLS {
 	public static String ReorgCorrectionsSubProcessor_accessrules_description;
 	public static String ReorgCorrectionsSubProcessor_project_seup_fix_description;
 	public static String ReorgCorrectionsSubProcessor_project_seup_fix_info;
+	public static String ReorgCorrectionsSubProcessor_remove_all_unused_imports;
 	public static String UnresolvedElementsSubProcessor_change_full_type_description;
 	public static String UnresolvedElementsSubProcessor_copy_annotation_jar_description;
 	public static String UnresolvedElementsSubProcessor_copy_annotation_jar_info;

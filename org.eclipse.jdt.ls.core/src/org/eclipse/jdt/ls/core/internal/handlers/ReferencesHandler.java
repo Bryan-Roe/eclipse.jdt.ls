@@ -21,12 +21,15 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.jdt.core.IAnnotation;
 import org.eclipse.jdt.core.IClassFile;
+import org.eclipse.jdt.core.IClasspathContainer;
+import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.IField;
 import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IMemberValuePair;
 import org.eclipse.jdt.core.IMethod;
+import org.eclipse.jdt.core.IPackageFragmentRoot;
 import org.eclipse.jdt.core.IType;
 import org.eclipse.jdt.core.ITypeRoot;
 import org.eclipse.jdt.core.JavaCore;
@@ -53,13 +56,13 @@ public final class ReferencesHandler {
 		this.preferenceManager = preferenceManager;
 	}
 
-	private IJavaSearchScope createSearchScope() throws JavaModelException {
+	private IJavaSearchScope createSearchScope(IJavaElement elementToSearch) throws JavaModelException {
 		IJavaProject[] projects = JavaCore.create(ResourcesPlugin.getWorkspace().getRoot()).getJavaProjects();
-		int scope = IJavaSearchScope.SOURCES;
-		if (preferenceManager.isClientSupportsClassFileContent()) {
-			scope |= IJavaSearchScope.APPLICATION_LIBRARIES;
+		int includeMask = IJavaSearchScope.SOURCES | IJavaSearchScope.REFERENCED_PROJECTS | IJavaSearchScope.APPLICATION_LIBRARIES;
+		if (isInsideJRE(elementToSearch)) {
+			includeMask |= IJavaSearchScope.SYSTEM_LIBRARIES;
 		}
-		return SearchEngine.createJavaSearchScope(projects, scope);
+		return SearchEngine.createJavaSearchScope(projects, includeMask);
 	}
 
 	public List<Location> findReferences(ReferenceParams param, IProgressMonitor monitor) {
@@ -79,22 +82,21 @@ public final class ReferencesHandler {
 			if (elementToSearch == null) {
 				return locations;
 			}
-			search(elementToSearch, locations, monitor);
+			search(elementToSearch, locations, monitor, param.getContext().isIncludeDeclaration());
 			if (monitor.isCanceled()) {
 				return Collections.emptyList();
 			}
-			if (preferenceManager.getPreferences().isIncludeAccessors() && elementToSearch instanceof IField) { // IField
-				IField field = (IField) elementToSearch;
+			if (preferenceManager.getPreferences().isIncludeAccessors() && elementToSearch instanceof IField field) { // IField
 				IMethod getter = GetterSetterUtil.getGetter(field);
 				if (getter != null) {
-					search(getter, locations, monitor);
+					search(getter, locations, monitor, false);
 				}
 				if (monitor.isCanceled()) {
 					return Collections.emptyList();
 				}
 				IMethod setter = GetterSetterUtil.getSetter(field);
 				if (setter != null) {
-					search(setter, locations, monitor);
+					search(setter, locations, monitor, false);
 				}
 				if (monitor.isCanceled()) {
 					return Collections.emptyList();
@@ -109,7 +111,7 @@ public final class ReferencesHandler {
 					for (IMethod method : builder.getMethods()) {
 						String[] parameters = method.getParameterTypes();
 						if (parameters.length == 1 && field.getElementName().equals(method.getElementName()) && fieldSignature.equals(parameters[0])) {
-							search(method, locations, monitor);
+							search(method, locations, monitor, false);
 						}
 					}
 				}
@@ -137,8 +139,8 @@ public final class ReferencesHandler {
 					if (pair.getValueKind() == IMemberValuePair.K_STRING) {
 						String memberName = pair.getMemberName();
 						Object value = pair.getValue();
-						if ("builderClassName".equals(memberName) && value instanceof String && !((String) value).isEmpty()) {
-							return declaringType.getFullyQualifiedName() + "." + (String) value;
+						if ("builderClassName".equals(memberName) && value instanceof String stringValue && !stringValue.isEmpty()) {
+							return declaringType.getFullyQualifiedName() + "." + stringValue;
 						}
 					}
 				}
@@ -149,12 +151,35 @@ public final class ReferencesHandler {
 		return declaringType.getFullyQualifiedName() + "." + declaringType.getElementName() + "Builder";
 	}
 
-	private void search(IJavaElement elementToSearch, final List<Location> locations, IProgressMonitor monitor) throws CoreException, JavaModelException {
+	// copied from org.eclipse.jdt.internal.ui.search.JavaSearchScopeFactory.isInsideJRE(IJavaElement)
+	private boolean isInsideJRE(IJavaElement element) {
+		IPackageFragmentRoot root = (IPackageFragmentRoot) element.getAncestor(IJavaElement.PACKAGE_FRAGMENT_ROOT);
+		if (root != null) {
+			try {
+				IClasspathEntry entry = root.getRawClasspathEntry();
+				if (entry.getEntryKind() == IClasspathEntry.CPE_CONTAINER) {
+					IClasspathContainer container = JavaCore.getClasspathContainer(entry.getPath(), root.getJavaProject());
+					return container != null && container.getKind() == IClasspathContainer.K_DEFAULT_SYSTEM;
+				}
+				return false;
+			} catch (JavaModelException e) {
+				JavaLanguageServerPlugin.logException(e);
+			}
+		}
+		return true; // include JRE in doubt
+	}
+
+	// for test purpose only
+	public void search(IJavaElement elementToSearch, final List<Location> locations, IProgressMonitor monitor, boolean isIncludeDeclaration) throws CoreException, JavaModelException {
 		boolean includeClassFiles = preferenceManager.isClientSupportsClassFileContent();
 		boolean includeDecompiledSources = preferenceManager.getPreferences().isIncludeDecompiledSources();
 		SearchEngine engine = new SearchEngine();
 		SearchPattern pattern = SearchPattern.createPattern(elementToSearch, IJavaSearchConstants.REFERENCES);
-		engine.search(pattern, new SearchParticipant[] { SearchEngine.getDefaultSearchParticipant() }, createSearchScope(), new SearchRequestor() {
+		if (isIncludeDeclaration) {
+			SearchPattern patternDecl = SearchPattern.createPattern(elementToSearch, IJavaSearchConstants.DECLARATIONS);
+			pattern = SearchPattern.createOrPattern(pattern, patternDecl);
+		}
+		engine.search(pattern, new SearchParticipant[] { SearchEngine.getDefaultSearchParticipant() }, createSearchScope(elementToSearch), new SearchRequestor() {
 
 			@Override
 			public void acceptSearchMatch(SearchMatch match) throws CoreException {
@@ -162,8 +187,7 @@ public final class ReferencesHandler {
 					return;
 				}
 				Object o = match.getElement();
-				if (o instanceof IJavaElement) {
-					IJavaElement element = (IJavaElement) o;
+				if (o instanceof IJavaElement element) {
 					ICompilationUnit compilationUnit = (ICompilationUnit) element.getAncestor(IJavaElement.COMPILATION_UNIT);
 					if (compilationUnit != null) {
 						Location location = JDTUtils.toLocation(compilationUnit, match.getOffset(), match.getLength());

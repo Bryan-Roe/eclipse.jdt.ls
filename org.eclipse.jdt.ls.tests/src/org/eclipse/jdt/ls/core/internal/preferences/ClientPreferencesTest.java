@@ -16,18 +16,24 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.when;
 
+import java.util.Collections;
+
 import org.eclipse.lsp4j.ClientCapabilities;
 import org.eclipse.lsp4j.CodeLensCapabilities;
 import org.eclipse.lsp4j.CompletionCapabilities;
 import org.eclipse.lsp4j.CompletionItemCapabilities;
+import org.eclipse.lsp4j.CompletionItemResolveSupportCapabilities;
 import org.eclipse.lsp4j.CompletionItemTagSupportCapabilities;
 import org.eclipse.lsp4j.DocumentSymbolCapabilities;
 import org.eclipse.lsp4j.FormattingCapabilities;
+import org.eclipse.lsp4j.InlayHintCapabilities;
+import org.eclipse.lsp4j.InlayHintWorkspaceCapabilities;
 import org.eclipse.lsp4j.RangeFormattingCapabilities;
 import org.eclipse.lsp4j.RenameCapabilities;
 import org.eclipse.lsp4j.SignatureHelpCapabilities;
 import org.eclipse.lsp4j.SymbolTagSupportCapabilities;
 import org.eclipse.lsp4j.TextDocumentClientCapabilities;
+import org.eclipse.lsp4j.WorkspaceClientCapabilities;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -45,9 +51,13 @@ public class ClientPreferencesTest {
 	@Mock
 	private TextDocumentClientCapabilities text;
 
+	@Mock
+	private WorkspaceClientCapabilities workspace;
+
 	@Before
 	public void setup() {
 		when(cap.getTextDocument()).thenReturn(text);
+		when(cap.getWorkspace()).thenReturn(workspace);
 		prefs = new ClientPreferences(cap);
 	}
 
@@ -136,6 +146,20 @@ public class ClientPreferencesTest {
 	}
 
 	@Test
+	public void testIsInlayHintDynamicRegistrationSupported() throws Exception {
+		assertFalse(prefs.isInlayHintDynamicRegistered());
+		when(text.getInlayHint()).thenReturn(new InlayHintCapabilities(true));
+		assertTrue(prefs.isInlayHintDynamicRegistered());
+	}
+
+	@Test
+	public void testIsInlayHintRefreshSupported() throws Exception {
+		assertFalse(prefs.isInlayHintRefreshSupported());
+		when(workspace.getInlayHint()).thenReturn(new InlayHintWorkspaceCapabilities(true));
+		assertTrue(prefs.isInlayHintRefreshSupported());
+	}
+
+	@Test
 	public void testIsHierarchicalDocumentSymbolSupported() throws Exception {
 		DocumentSymbolCapabilities capabilities = new DocumentSymbolCapabilities();
 		assertFalse(prefs.isHierarchicalDocumentSymbolSupported());
@@ -157,6 +181,20 @@ public class ClientPreferencesTest {
 		when(text.getCompletion()).thenReturn(capabilities);
 		itemCapabilities.setTagSupport(new CompletionItemTagSupportCapabilities());
 		assertTrue(prefs.isCompletionItemTagSupported());
+	}
+
+	@Test
+	public void testIsPropertySupportedForCompletionResolve() {
+		String property = "property";
+		assertFalse(prefs.isPropertySupportedForCompletionResolve(property));
+		CompletionItemCapabilities itemCapabilities = new CompletionItemCapabilities();
+		CompletionCapabilities capabilities = new CompletionCapabilities(itemCapabilities);
+		when(text.getCompletion()).thenReturn(capabilities);
+
+		CompletionItemResolveSupportCapabilities resolveCapabilities = new CompletionItemResolveSupportCapabilities();
+		resolveCapabilities.setProperties(Collections.singletonList(property));
+		itemCapabilities.setResolveSupport(resolveCapabilities);
+		assertTrue(prefs.isPropertySupportedForCompletionResolve(property));
 	}
 
 	@Test

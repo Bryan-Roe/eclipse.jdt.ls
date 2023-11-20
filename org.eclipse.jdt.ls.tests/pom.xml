@@ -6,7 +6,7 @@
 	<parent>
 		<groupId>org.eclipse.jdt.ls</groupId>
 		<artifactId>parent</artifactId>
-		<version>1.13.0-SNAPSHOT</version>
+		<version>1.30.0-SNAPSHOT</version>
 	</parent>
 	<artifactId>org.eclipse.jdt.ls.tests</artifactId>
 	<name>${base.name} :: Tests</name>
@@ -20,7 +20,7 @@
 					<artifactId>tycho-surefire-plugin</artifactId>
 					<version>${tycho-version}</version>
 					<configuration>
-						<argLine>${tycho.testArgLine} ${os.testArgs} ${lombokArgs}</argLine>
+						<argLine>${tycho.testArgLine} ${os.testArgs} "${lombokArgs}"</argLine>
 						<runOrder>random</runOrder>
 						<providerProperties>
 							<excludegroups>org.eclipse.jdt.ls.tests.Unstable</excludegroups>
@@ -41,7 +41,7 @@
 				</property>
 			</activation>
 			<properties>
-				<lombokArgs>-javaagent:${basedir}/lib/lombok-1.18.24.jar</lombokArgs>
+				<lombokArgs>-javaagent:${basedir}/lib/lombok-1.18.28.jar</lombokArgs>
 			</properties>
 			<build>
 				<plugins>
@@ -53,7 +53,7 @@
 								<artifactItem>
 									<groupId>org.projectlombok</groupId>
 									<artifactId>lombok</artifactId>
-									<version>1.18.24</version>
+									<version>1.18.28</version>
 								</artifactItem>
 							</artifactItems>
 						</configuration>
@@ -69,7 +69,7 @@
 				</os>
 			</activation>
 			<properties>
-				<os.testArgs>-XstartOnFirstThread -noverify</os.testArgs>
+				<os.testArgs>-XstartOnFirstThread</os.testArgs>
 			</properties>
 			<build>
 				<pluginManagement>

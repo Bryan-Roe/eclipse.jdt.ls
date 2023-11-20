@@ -25,6 +25,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.eclipse.buildship.core.internal.CorePlugin;
+import org.eclipse.core.internal.resources.Workspace;
+import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.resources.WorkspaceJob;
 import org.eclipse.core.runtime.CoreException;
@@ -39,9 +41,9 @@ import org.eclipse.core.runtime.jobs.Job;
 import org.eclipse.jdt.ls.core.internal.JavaClientConnection;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.JobHelpers;
-import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.ServiceStatus;
 import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager;
+import org.eclipse.jdt.ls.core.internal.managers.TelemetryManager;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jdt.ls.core.internal.preferences.Preferences;
 import org.eclipse.jdt.ls.internal.gradle.checksums.WrapperValidator;
@@ -75,15 +77,31 @@ final public class InitHandler extends BaseInitHandler {
 
 	private WorkspaceExecuteCommandHandler commandHandler;
 
+	private TelemetryManager telemetryManager;
+
 	public InitHandler(ProjectsManager manager, PreferenceManager preferenceManager, JavaClientConnection connection, WorkspaceExecuteCommandHandler commandHandler) {
+		this(manager, preferenceManager, connection, commandHandler, new TelemetryManager());
+	}
+
+	public InitHandler(ProjectsManager manager, PreferenceManager preferenceManager, JavaClientConnection connection, WorkspaceExecuteCommandHandler commandHandler, TelemetryManager telemetryManager) {
 		super(manager, preferenceManager);
 		this.connection = connection;
 		this.preferenceManager = preferenceManager;
 		this.commandHandler = commandHandler;
+		this.telemetryManager = telemetryManager;
 	}
 
 	@Override
 	public Map<?, ?> handleInitializationOptions(InitializeParams param) {
+		// https://github.com/redhat-developer/vscode-java/issues/3184
+		// start the m2e and buildship plugin before calling JavaCore.setOptions
+		// load maven plugin https://github.com/redhat-developer/vscode-java/issues/2088
+		startBundle(IMavenConstants.PLUGIN_ID);
+		long start = System.currentTimeMillis();
+		JobHelpers.waitForProjectRegistryRefreshJob();
+		JavaLanguageServerPlugin.logInfo("ProjectRegistryRefreshJob finished " + (System.currentTimeMillis() - start) + "ms");
+		// load gradle plugin https://github.com/redhat-developer/vscode-java/issues/2088
+		startBundle(CorePlugin.PLUGIN_ID);
 		Map<?, ?> initializationOptions = super.handleInitializationOptions(param);
 
 		try {
@@ -101,7 +119,7 @@ final public class InitHandler extends BaseInitHandler {
 	public void registerCapabilities(InitializeResult initializeResult) {
 		ServerCapabilities capabilities = new ServerCapabilities();
 		if (!preferenceManager.getClientPreferences().isCompletionDynamicRegistered()) {
-			capabilities.setCompletionProvider(CompletionHandler.DEFAULT_COMPLETION_OPTIONS);
+			capabilities.setCompletionProvider(CompletionHandler.getDefaultCompletionOptions(preferenceManager));
 		}
 		if (!preferenceManager.getClientPreferences().isFormattingDynamicRegistrationSupported()) {
 			capabilities.setDocumentFormattingProvider(Boolean.TRUE);
@@ -172,6 +190,14 @@ final public class InitHandler extends BaseInitHandler {
 		if (!preferenceManager.getClientPreferences().isSelectionRangeDynamicRegistered()) {
 			capabilities.setSelectionRangeProvider(Boolean.TRUE);
 		}
+		if (!preferenceManager.getClientPreferences().isInlayHintDynamicRegistered()) {
+			capabilities.setInlayHintProvider(Boolean.TRUE);
+		}
+
+		if (!preferenceManager.getClientPreferences().isTypeHierarchyDynamicRegistrationSupported()) {
+			capabilities.setTypeHierarchyProvider(Boolean.TRUE);
+		}
+
 		capabilities.setCallHierarchyProvider(Boolean.TRUE);
 		TextDocumentSyncOptions textDocumentSyncOptions = new TextDocumentSyncOptions();
 		textDocumentSyncOptions.setOpenClose(Boolean.TRUE);
@@ -196,10 +222,7 @@ final public class InitHandler extends BaseInitHandler {
 		SemanticTokensWithRegistrationOptions semanticTokensOptions = new SemanticTokensWithRegistrationOptions();
 		semanticTokensOptions.setFull(new SemanticTokensServerFull(false));
 		semanticTokensOptions.setRange(false);
-		semanticTokensOptions.setDocumentSelector(List.of(
-			new DocumentFilter("java", "file", null),
-			new DocumentFilter("java", "jdt", null)
-		));
+		semanticTokensOptions.setDocumentSelector(List.of(new DocumentFilter("java", "file", null), new DocumentFilter("java", "jdt", null)));
 		semanticTokensOptions.setLegend(SemanticTokensHandler.legend());
 		capabilities.setSemanticTokensProvider(semanticTokensOptions);
 
@@ -208,27 +231,15 @@ final public class InitHandler extends BaseInitHandler {
 
 	@Override
 	public void triggerInitialization(Collection<IPath> roots) {
-		if (ProjectUtils.getAllProjects().length == 0) {
-			try {
-				// a workaround for https://github.com/redhat-developer/vscode-java/issues/2020
-				JavaLanguageServerPlugin.logInfo("Wait for AutoBuildOffJob start");
-				long start = System.currentTimeMillis();
-				JobHelpers.waitForBuildOffJobs(2 * 60 * 1000); // 2 minutes
-				JavaLanguageServerPlugin.logInfo("Wait for AutoBuildOffJob end " + (System.currentTimeMillis() - start) + "ms");
-			} catch (OperationCanceledException e) {
-				logException(e.getMessage(), e);
-			}
+		// https://github.com/redhat-developer/vscode-java/issues/2763
+		// When starting, Java LS turn off autobuild. See JavaLanguageServerPlugin.start(BundleContext).
+		// In this case Eclipse schedules the AutoBuildJobOff job. See https://bugs.eclipse.org/bugs/show_bug.cgi?id=573595#c11
+		// This job causes Java LS sometimes to hang at https://github.com/eclipse-jdt/eclipse.jdt.core/blob/master/org.eclipse.jdt.apt.core/src/org/eclipse/jdt/apt/core/internal/generatedfile/GeneratedSourceFolderManager.java#L508
+		Job.getJobManager().wakeUp(ResourcesPlugin.FAMILY_AUTO_BUILD);
+		IWorkspace workspace = ResourcesPlugin.getWorkspace();
+		if (workspace instanceof Workspace workspaceImpl) {
+			workspaceImpl.getBuildManager().waitForAutoBuildOff();
 		}
-		// load maven plugin https://github.com/redhat-developer/vscode-java/issues/2088
-		startBundle(IMavenConstants.PLUGIN_ID);
-		long start = System.currentTimeMillis();
-		JobHelpers.waitForProjectRegistryRefreshJob();
-		JavaLanguageServerPlugin.logInfo("ProjectRegistryRefreshJob finished " + (System.currentTimeMillis() - start) + "ms");
-		// load gradle plugin https://github.com/redhat-developer/vscode-java/issues/2088
-		startBundle(CorePlugin.PLUGIN_ID);
-		start = System.currentTimeMillis();
-		JobHelpers.waitForLoadingGradleVersionJob();
-		JavaLanguageServerPlugin.logInfo("LoadingGradleVersionJob finished " + (System.currentTimeMillis() - start) + "ms");
 		Job job = new WorkspaceJob("Initialize Workspace") {
 			@Override
 			public IStatus runInWorkspace(IProgressMonitor monitor) {
@@ -239,13 +250,18 @@ final public class InitHandler extends BaseInitHandler {
 				if (preferences.isImportGradleEnabled()) {
 					WrapperValidator.putSha256(preferences.getGradleWrapperList());
 				}
+				Runnable resetBuildState = () -> {
+				};
 				try {
-					ProjectsManager.setAutoBuilding(false);
+					start = System.currentTimeMillis();
+					JobHelpers.waitForRepositoryRegistryUpdateJob();
+					JavaLanguageServerPlugin.logInfo("RepositoryRegistryUpdateJob finished " + (System.currentTimeMillis() - start) + "ms");
+					resetBuildState = ProjectsManager.interruptAutoBuild();
 					projectsManager.initializeProjects(roots, subMonitor);
 					projectsManager.configureFilters(monitor);
-					ProjectsManager.setAutoBuilding(preferences.isAutobuildEnabled());
 					JavaLanguageServerPlugin.logInfo("Workspace initialized in " + (System.currentTimeMillis() - start) + "ms");
 					connection.sendStatus(ServiceStatus.Started, "Ready");
+					telemetryManager.onProjectsInitialized(System.currentTimeMillis());
 				} catch (OperationCanceledException e) {
 					connection.sendStatus(ServiceStatus.Error, "Initialization has been cancelled.");
 					return Status.CANCEL_STATUS;
@@ -253,6 +269,7 @@ final public class InitHandler extends BaseInitHandler {
 					JavaLanguageServerPlugin.logException("Initialization failed ", e);
 					connection.sendStatus(ServiceStatus.Error, e.getMessage());
 				} finally {
+					resetBuildState.run();
 					projectsManager.registerListeners();
 					preferenceManager.addPreferencesChangeListener(new InlayHintsPreferenceChangeListener());
 				}
@@ -267,8 +284,8 @@ final public class InitHandler extends BaseInitHandler {
 			public boolean belongsTo(Object family) {
 				Collection<IPath> rootPathsSet = roots.stream().collect(Collectors.toSet());
 				boolean equalToRootPaths = false;
-				if (family instanceof Collection<?>) {
-					equalToRootPaths = rootPathsSet.equals(((Collection<IPath>) family).stream().collect(Collectors.toSet()));
+				if (family instanceof Collection<?> familyCollection) {
+					equalToRootPaths = rootPathsSet.equals(familyCollection.stream().collect(Collectors.toSet()));
 				}
 				return JAVA_LS_INITIALIZATION_JOBS.equals(family) || equalToRootPaths;
 			}
@@ -282,7 +299,7 @@ final public class InitHandler extends BaseInitHandler {
 	private void startBundle(String symbolicName) {
 		try {
 			long start = System.currentTimeMillis();
-			JavaLanguageServerPlugin.logInfo("Starting " + symbolicName);
+			JavaLanguageServerPlugin.debugTrace("Starting " + symbolicName);
 			Platform.getBundle(symbolicName).start(Bundle.START_TRANSIENT);
 			JavaLanguageServerPlugin.logInfo("Started " + symbolicName + " " + (System.currentTimeMillis() - start) + "ms");
 		} catch (BundleException e) {

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2017,2020 Microsoft Corporation and others.
+ * Copyright (c) 2017-2022 Microsoft Corporation and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -12,11 +12,15 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.internal;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
+import org.eclipse.buildship.core.internal.util.gradle.GradleVersion;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.jdt.ls.core.internal.commands.BuildPathCommand;
 import org.eclipse.jdt.ls.core.internal.commands.DiagnosticsCommand;
@@ -25,17 +29,25 @@ import org.eclipse.jdt.ls.core.internal.commands.ProjectCommand;
 import org.eclipse.jdt.ls.core.internal.commands.ProjectCommand.ClasspathOptions;
 import org.eclipse.jdt.ls.core.internal.commands.SourceAttachmentCommand;
 import org.eclipse.jdt.ls.core.internal.commands.TypeHierarchyCommand;
+import org.eclipse.jdt.ls.core.internal.framework.protobuf.ProtobufSupport;
+import org.eclipse.jdt.ls.core.internal.handlers.BundleUtils;
+import org.eclipse.jdt.ls.core.internal.handlers.CompletionHandler;
+import org.eclipse.jdt.ls.core.internal.handlers.CreateModuleInfoHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.FormatterHandler;
+import org.eclipse.jdt.ls.core.internal.handlers.PasteEventHandler;
+import org.eclipse.jdt.ls.core.internal.handlers.PasteEventHandler.PasteEventParams;
 import org.eclipse.jdt.ls.core.internal.handlers.ResolveSourceMappingHandler;
+import org.eclipse.jdt.ls.core.internal.handlers.SmartDetectionHandler;
+import org.eclipse.jdt.ls.core.internal.handlers.SmartDetectionParams;
+import org.eclipse.jdt.ls.core.internal.managers.ContentProviderManager;
 import org.eclipse.jdt.ls.core.internal.managers.GradleProjectImporter;
-import org.eclipse.jdt.ls.core.internal.managers.GradleUtils;
-import org.eclipse.lsp4j.ResolveTypeHierarchyItemParams;
 import org.eclipse.lsp4j.SymbolInformation;
 import org.eclipse.lsp4j.TextDocumentPositionParams;
-import org.eclipse.lsp4j.TypeHierarchyDirection;
-import org.eclipse.lsp4j.TypeHierarchyItem;
-import org.eclipse.lsp4j.TypeHierarchyParams;
 import org.eclipse.lsp4j.WorkspaceEdit;
+import org.eclipse.lsp4j.legacy.typeHierarchy.ResolveTypeHierarchyItemParams;
+import org.eclipse.lsp4j.legacy.typeHierarchy.TypeHierarchyDirection;
+import org.eclipse.lsp4j.legacy.typeHierarchy.TypeHierarchyItem;
+import org.eclipse.lsp4j.legacy.typeHierarchy.TypeHierarchyParams;
 
 public class JDTDelegateCommandHandler implements IDelegateCommandHandler {
 
@@ -63,6 +75,8 @@ public class JDTDelegateCommandHandler implements IDelegateCommandHandler {
 				case "java.edit.stringFormatting":
 					FormatterHandler handler = new FormatterHandler(JavaLanguageServerPlugin.getPreferencesManager());
 					return handler.stringFormatting((String) arguments.get(0), JSONUtility.toModel(arguments.get(1), Map.class), Integer.parseInt((String) arguments.get(2)), monitor);
+				case JAVA_EDIT_HANDLE_PASTE_EVENT:
+					return PasteEventHandler.handlePasteEvent(JSONUtility.toLsp4jModel(arguments.get(0), PasteEventParams.class), monitor);
 				case "java.project.resolveSourceAttachment":
 					return SourceAttachmentCommand.resolveSourceAttachment(arguments, monitor);
 				case "java.project.updateSourceAttachment":
@@ -84,7 +98,10 @@ public class JDTDelegateCommandHandler implements IDelegateCommandHandler {
 				case "java.project.getAll":
 					return ProjectCommand.getAllJavaProjects();
 				case "java.project.refreshDiagnostics":
-					return DiagnosticsCommand.refreshDiagnostics((String) arguments.get(0), (String) arguments.get(1), (boolean) arguments.get(2));
+					if (arguments.size() < 4) {
+						return DiagnosticsCommand.refreshDiagnostics((String) arguments.get(0), (String) arguments.get(1), (boolean) arguments.get(2));
+					}
+					return DiagnosticsCommand.refreshDiagnostics((String) arguments.get(0), (String) arguments.get(1), (boolean) arguments.get(2), (boolean) arguments.get(3));
 				case "java.project.import":
 					ProjectCommand.importProject(monitor);
 					return null;
@@ -121,12 +138,45 @@ public class JDTDelegateCommandHandler implements IDelegateCommandHandler {
 					String projectUri = (String) arguments.get(0);
 					String gradleVersion = arguments.size() > 1 ? (String) arguments.get(1) : null;
 					if (gradleVersion == null) {
-						gradleVersion = GradleUtils.CURRENT_GRADLE;
+						gradleVersion = GradleVersion.current().getVersion();
 					}
 					return GradleProjectImporter.upgradeGradleVersion(projectUri, gradleVersion, monitor);
 				case "java.project.resolveWorkspaceSymbol":
 					SymbolInformation si = JSONUtility.toModel(arguments.get(0), SymbolInformation.class);
 					return ProjectCommand.resolveWorkspaceSymbol(si);
+				case "java.protobuf.generateSources":
+					ProtobufSupport.generateProtobufSources((ArrayList<String>) arguments.get(0), monitor);
+					return null;
+				case "java.project.createModuleInfo":
+					return CreateModuleInfoHandler.createModuleInfo((String) arguments.get(0), monitor);
+				case "java.reloadBundles":
+					try {
+						BundleUtils.loadBundles((ArrayList<String>) arguments.get(0));
+						return true;
+					} catch (CoreException e) {
+						JavaLanguageServerPlugin.log(e);
+						return false;
+					}
+				case "java.completion.onDidSelect":
+					CompletionHandler completionHandler = new CompletionHandler(JavaLanguageServerPlugin.getPreferencesManager());
+					String requestId = (String) arguments.get(0);
+					String proposalId = (String) arguments.get(1);
+					completionHandler.onDidCompletionItemSelect(requestId, proposalId);
+					return new Object();
+				case "java.decompile":
+					String uri = (String) arguments.get(0);
+					try {
+						ContentProviderManager contentProvider = JavaLanguageServerPlugin.getContentProviderManager();
+						return contentProvider.getContent(new URI(uri), monitor);
+					} catch (URISyntaxException e) {
+						return false;
+					}
+				case JAVA_EDIT_SMART_SEMICOLON_DETECTION:
+					if (!JavaLanguageServerPlugin.getPreferencesManager().getPreferences().isSmartSemicolonDetection()) {
+						return null;
+					}
+					SmartDetectionParams smartDetectionParams = JSONUtility.toModel(arguments.get(0), SmartDetectionParams.class);
+					return new SmartDetectionHandler(smartDetectionParams).getLocation(monitor);
 				default:
 					break;
 			}

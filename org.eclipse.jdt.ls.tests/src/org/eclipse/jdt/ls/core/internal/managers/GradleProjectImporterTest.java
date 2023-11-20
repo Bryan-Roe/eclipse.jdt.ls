@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016-2020 Red Hat Inc. and others.
+ * Copyright (c) 2016-2022 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -22,8 +22,8 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
-import java.io.InputStream;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -46,6 +46,8 @@ import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.jobs.Job;
+import org.eclipse.jdt.apt.core.util.AptConfig;
+import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IType;
 import org.eclipse.jdt.core.JavaCore;
@@ -60,15 +62,14 @@ import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.ResourceUtils;
 import org.eclipse.jdt.ls.core.internal.TestVMType;
 import org.eclipse.jdt.ls.core.internal.WorkspaceHelper;
-import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager.CHANGE_TYPE;
 import org.eclipse.jdt.ls.core.internal.preferences.Preferences;
 import org.eclipse.jdt.ls.core.internal.preferences.Preferences.FeatureStatus;
 import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnitRunner;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.io.Files;
 
 /**
@@ -79,6 +80,12 @@ import com.google.common.io.Files;
 public class GradleProjectImporterTest extends AbstractGradleBasedTest{
 
 	private static final String GRADLE1_PATTERN = "**/gradle1";
+	private String gradleJavaHome;
+
+	@Before
+	public void setUp() {
+		gradleJavaHome = JavaLanguageServerPlugin.getPreferencesManager().getPreferences().getGradleJavaHome();
+	}
 
 	@Test
 	public void importSimpleGradleProject() throws Exception {
@@ -94,6 +101,7 @@ public class GradleProjectImporterTest extends AbstractGradleBasedTest{
 	public void cleanUp() throws Exception {
 		super.cleanUp();
 		Job.getJobManager().join(CorePlugin.GRADLE_JOB_FAMILY, new NullProgressMonitor());
+		JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setGradleJavaHome(gradleJavaHome);
 	}
 
 	@Test
@@ -160,7 +168,7 @@ public class GradleProjectImporterTest extends AbstractGradleBasedTest{
 			} else {
 				assertSame(distribution, GradleProjectImporter.DEFAULT_DISTRIBUTION);
 			}
-			String requiredVersion = "5.2.1";
+			String requiredVersion = "7.3.3";
 			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setGradleVersion(requiredVersion);
 			distribution = GradleProjectImporter.getGradleDistribution(file.toPath());
 			assertEquals(distribution.getClass(), FixedVersionGradleDistribution.class);
@@ -385,14 +393,17 @@ public class GradleProjectImporterTest extends AbstractGradleBasedTest{
 		try {
 			Path rootPath = ResourcesPlugin.getWorkspace().getRoot().getLocation().toFile().toPath();
 			BuildConfiguration build = GradleProjectImporter.getBuildConfiguration(rootPath);
-			assertTrue(build.getArguments().isEmpty());
+			assertFalse(build.getArguments().isEmpty());
+			assertEquals(2, build.getArguments().size());
+			assertTrue(build.getArguments().contains("--init-script"));
 
 			JavaLanguageServerPlugin.getPreferencesManager().getPreferences()
-					.setGradleArguments(ImmutableList.of("-Pproperty=value", "--stacktrace"));
+					.setGradleArguments(List.of("-Pproperty=value", "--stacktrace"));
 			build = GradleProjectImporter.getBuildConfiguration(rootPath);
-			assertEquals(2, build.getArguments().size());
+			assertEquals(4, build.getArguments().size());
 			assertTrue(build.getArguments().contains("-Pproperty=value"));
 			assertTrue(build.getArguments().contains("--stacktrace"));
+			assertTrue(build.getArguments().contains("--init-script"));
 		} finally {
 			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setGradleArguments(arguments);
 		}
@@ -414,6 +425,21 @@ public class GradleProjectImporterTest extends AbstractGradleBasedTest{
 	}
 
 	@Test
+	public void testGradleAutoSync() {
+		FeatureStatus status = JavaLanguageServerPlugin.getPreferencesManager().getPreferences().getUpdateBuildConfigurationStatus();
+		try {
+			Path rootPath = ResourcesPlugin.getWorkspace().getRoot().getLocation().toFile().toPath();
+			BuildConfiguration build = GradleProjectImporter.getBuildConfiguration(rootPath);
+			assertFalse(build.isAutoSync());
+			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setUpdateBuildConfigurationStatus(FeatureStatus.automatic);
+			build = GradleProjectImporter.getBuildConfiguration(rootPath);
+			assertTrue(build.isAutoSync());
+		} finally {
+			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setUpdateBuildConfigurationStatus(status);
+		}
+	}
+
+	@Test
 	public void testGradleJvmArguments() {
 		List<String> jvmArguments = JavaLanguageServerPlugin.getPreferencesManager().getPreferences().getGradleJvmArguments();
 		try {
@@ -422,7 +448,7 @@ public class GradleProjectImporterTest extends AbstractGradleBasedTest{
 			assertTrue(build.getJvmArguments().isEmpty());
 
 			JavaLanguageServerPlugin.getPreferencesManager().getPreferences()
-					.setGradleJvmArguments(ImmutableList.of("-Djavax.net.ssl.trustStore=truststore.jks"));
+					.setGradleJvmArguments(List.of("-Djavax.net.ssl.trustStore=truststore.jks"));
 			build = GradleProjectImporter.getBuildConfiguration(rootPath);
 			assertEquals(1, build.getJvmArguments().size());
 			assertTrue(build.getJvmArguments().contains("-Djavax.net.ssl.trustStore=truststore.jks"));
@@ -459,7 +485,7 @@ public class GradleProjectImporterTest extends AbstractGradleBasedTest{
 		List<String> arguments = JavaLanguageServerPlugin.getPreferencesManager().getPreferences().getGradleArguments();
 		try {
 			// force overrideWorkspace
-			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setGradleArguments(ImmutableList.of("--stacktrace"));
+			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setGradleArguments(List.of("--stacktrace"));
 			List<IProject> projects = importProjects("gradle/subprojects");
 			assertEquals(4, projects.size());//default + 3 gradle projects
 			IProject root = WorkspaceHelper.getProject("subprojects");
@@ -475,26 +501,33 @@ public class GradleProjectImporterTest extends AbstractGradleBasedTest{
 			ProjectConfiguration configuration = getProjectConfiguration(root);
 			// check the children .settings/org.eclipse.buildship.core.prefs
 			assertTrue(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
+			assertEquals(3, configuration.getBuildConfiguration().getArguments().size());
 			configuration = getProjectConfiguration(project1);
 			assertFalse(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
 			configuration = getProjectConfiguration(project2);
 			assertFalse(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
-			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setGradleArguments(ImmutableList.of("--stacktrace"));
+			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setGradleArguments(List.of("--stacktrace"));
 			configuration = CorePlugin.configurationManager().loadProjectConfiguration(project1);
 			assertTrue(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
+			assertEquals(3, configuration.getBuildConfiguration().getArguments().size());
 			configuration = CorePlugin.configurationManager().loadProjectConfiguration(project2);
 			assertTrue(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
+			assertEquals(3, configuration.getBuildConfiguration().getArguments().size());
 			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setGradleArguments(arguments);
 			projectsManager.updateProject(root, true);
 			JobHelpers.waitForJobsToComplete();
 			Job.getJobManager().join(CorePlugin.GRADLE_JOB_FAMILY, new NullProgressMonitor());
 			configuration = CorePlugin.configurationManager().loadProjectConfiguration(root);
-			assertFalse(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
+			// the configuration contains two arguments about jdt.ls init script
+			assertTrue(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
+			assertEquals(2, configuration.getBuildConfiguration().getArguments().size());
 			// check that the children are updated
 			configuration = CorePlugin.configurationManager().loadProjectConfiguration(project1);
-			assertFalse(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
+			assertTrue(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
+			assertEquals(2, configuration.getBuildConfiguration().getArguments().size());
 			configuration = CorePlugin.configurationManager().loadProjectConfiguration(project2);
-			assertFalse(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
+			assertTrue(configuration.getBuildConfiguration().isOverrideWorkspaceSettings());
+			assertEquals(2, configuration.getBuildConfiguration().getArguments().size());
 		} finally {
 			JavaLanguageServerPlugin.getPreferencesManager().getPreferences().setGradleArguments(arguments);
 		}
@@ -530,6 +563,182 @@ public class GradleProjectImporterTest extends AbstractGradleBasedTest{
 		} finally {
 			this.preferences.setImportGradleEnabled(true);
 		}
+	}
+
+	@Test
+	public void avoidImportDuplicatedProjects2() throws Exception {
+		try {
+			this.preferences.setImportGradleEnabled(false);
+			importProjects("multi-buildtools");
+			IProject project = getProject("multi-build-tools");
+			assertIsJavaProject(project);
+			GradleProjectImporter importer = new GradleProjectImporter();
+			importer.initialize(project.getLocation().toFile());
+
+			this.preferences.setImportGradleEnabled(true);
+			assertFalse(importer.applies(null));
+		} finally {
+			this.preferences.setImportGradleEnabled(true);
+		}
+	}
+
+	@Test
+	public void testProtoBufSupport() throws Exception {
+		try {
+			this.preferences.setProtobufSupportEnabled(true);
+			IProject project = importGradleProject("protobuf");
+			IJavaProject javaProject = JavaCore.create(project);
+			IClasspathEntry[] classpathEntries = javaProject.getRawClasspath();
+			assertTrue(Arrays.stream(classpathEntries).anyMatch(cpe -> {
+				return "/protobuf/build/generated/source/proto/main/java".equals(cpe.getPath().toString());
+			}));
+			assertTrue(Arrays.stream(classpathEntries).anyMatch(cpe -> {
+				return "/protobuf/build/generated/source/proto/test/java".equals(cpe.getPath().toString());
+			}));
+		} finally {
+			this.preferences.setProtobufSupportEnabled(false);
+		}
+	}
+
+	@Test
+	public void testProtoBufSupportChanged() throws Exception {
+		try {
+			this.preferences.setProtobufSupportEnabled(true);
+			IProject project = importGradleProject("protobuf");
+			IJavaProject javaProject = JavaCore.create(project);
+			IClasspathEntry[] classpathEntries = javaProject.getRawClasspath();
+			assertEquals(5, classpathEntries.length);
+			assertTrue(Arrays.stream(classpathEntries).anyMatch(cpe -> {
+				return "/protobuf/build/generated/source/proto/main/java".equals(cpe.getPath().toString());
+			}));
+			assertTrue(Arrays.stream(classpathEntries).anyMatch(cpe -> {
+				return "/protobuf/build/generated/source/proto/test/java".equals(cpe.getPath().toString());
+			}));
+
+			this.preferences.setProtobufSupportEnabled(false);
+			projectsManager.updateProject(project, true);
+
+			waitForBackgroundJobs();
+
+			assertEquals(3, javaProject.getRawClasspath().length);
+		} finally {
+			this.preferences.setProtobufSupportEnabled(false);
+		}
+	}
+
+	@Test
+	public void testNameConflictProject() throws Exception {
+		List<IProject> projects = importProjects("gradle/nameConflict");
+		assertEquals(3, projects.size());
+		IProject root = WorkspaceHelper.getProject("nameConflict");
+		assertIsGradleProject(root);
+		IProject subProject = WorkspaceHelper.getProject("nameConflict-nameconflict");
+		assertIsGradleProject(subProject);
+	}
+
+	@Test
+	public void testAndroidProjectSupport() throws Exception {
+		try {
+			this.preferences.setAndroidSupportEnabled(true);
+			List<IProject> projects = importProjects("gradle/android");
+			assertEquals(3, projects.size());
+			IProject androidAppProject = WorkspaceHelper.getProject("app");
+			assertNotNull(androidAppProject);
+			IJavaProject javaProject = JavaCore.create(androidAppProject);
+			IClasspathEntry[] classpathEntries = javaProject.getRawClasspath();
+			String androidHome = System.getenv("ANDROID_HOME");
+			if (androidHome == null) {
+				// android SDK is not detected, plugin will do nothing
+				assertEquals(2, classpathEntries.length);
+			} else {
+				// android SDK is detected, android project should be imported successfully
+				assertEquals(6, classpathEntries.length);
+				// main sourceSet are added to classpath correctly
+				assertTrue(Arrays.stream(classpathEntries).anyMatch(cpe -> {
+					return "/app/src/main/java".equals(cpe.getPath().toString());
+				}));
+				// test sourceSet are added to classpath correctly
+				assertTrue(Arrays.stream(classpathEntries).anyMatch(cpe -> {
+					return "/app/src/test/java".equals(cpe.getPath().toString());
+				}));
+				// androidTest sourceSet are added to classpath correctly
+				assertTrue(Arrays.stream(classpathEntries).anyMatch(cpe -> {
+					return "/app/src/androidTest/java".equals(cpe.getPath().toString());
+				}));
+				// buildConfig files are added to classpath correctly
+				assertTrue(Arrays.stream(classpathEntries).anyMatch(cpe -> {
+					return "/app/build/generated/source/buildConfig/standard/debug".equals(cpe.getPath().toString());
+				}));
+				// dataBinding files are added to classpath correctly
+				assertTrue(Arrays.stream(classpathEntries).anyMatch(cpe -> {
+					return "/app/build/generated/data_binding_base_class_source_out/standardDebug/out".equals(cpe.getPath().toString());
+				}));
+			}
+		} finally {
+			this.preferences.setAndroidSupportEnabled(false);
+		}
+	}
+
+	@Test
+	public void testAndroidProjectSupportChanged() throws Exception {
+		try {
+			this.preferences.setAndroidSupportEnabled(true);
+			List<IProject> projects = importProjects("gradle/android");
+			assertEquals(3, projects.size());
+			IProject androidAppProject = WorkspaceHelper.getProject("app");
+			assertNotNull(androidAppProject);
+			IJavaProject javaProject = JavaCore.create(androidAppProject);
+			IClasspathEntry[] classpathEntries = javaProject.getRawClasspath();
+			String androidHome = System.getenv("ANDROID_HOME");
+			if (androidHome == null) {
+				// android SDK is not detected, plugin will do nothing
+				assertEquals(2, classpathEntries.length);
+			} else {
+				// android SDK is detected, android project should be imported successfully
+				assertEquals(6, classpathEntries.length);
+			}
+			this.preferences.setAndroidSupportEnabled(false);
+			for (IProject project : projects) {
+				projectsManager.updateProject(project, true);
+			}
+			waitForBackgroundJobs();
+			// regardless of ANDROID_HOME, the number of cpe is 2 since android support is disabled
+			assertEquals(2, javaProject.getRawClasspath().length);
+		} finally {
+			this.preferences.setAndroidSupportEnabled(false);
+		}
+	}
+
+	@Test
+	public void testNeedReplaceContent() throws Exception {
+		File f = null;
+		try {
+			f = File.createTempFile("test", ".txt");
+			MessageDigest md = MessageDigest.getInstance("sha-256");
+			md.update(java.nio.file.Files.readAllBytes(f.toPath()));
+			byte[] digest = md.digest();
+			assertTrue( GradleUtils.needReplaceContent(f, digest));
+
+			java.nio.file.Files.write(f.toPath(), "modification".getBytes());
+			assertTrue(GradleUtils.needReplaceContent(f, digest));
+		} finally {
+			if (f != null && f.exists()) {
+				if (!f.delete()) {
+					f.deleteOnExit();
+				}
+			}
+		}
+	}
+
+	@Test
+	public void testAnnotationProcessing() throws Exception {
+		IProject project = importGradleProject("apt");
+		IJavaProject javaProject = JavaCore.create(project);
+
+		assertNotNull(javaProject);
+		assertTrue(AptConfig.isEnabled(javaProject));
+		assertEquals("true", AptConfig.getRawProcessorOptions(javaProject).get("mapstruct.suppressGeneratorTimestamp"));
+		assertEquals("apt", AptConfig.getRawProcessorOptions(javaProject).get("test.arg"));
 	}
 
 	private ProjectConfiguration getProjectConfiguration(IProject project) {

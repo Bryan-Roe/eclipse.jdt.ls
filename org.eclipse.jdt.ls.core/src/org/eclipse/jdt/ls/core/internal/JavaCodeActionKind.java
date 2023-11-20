@@ -64,6 +64,11 @@ public interface JavaCodeActionKind {
 	public static final String SOURCE_OVERRIDE_METHODS = CodeActionKind.Source + ".overrideMethods";
 
 	/**
+	 * Sort members kind
+	 */
+	public static final String SOURCE_SORT_MEMBERS = CodeActionKind.Source + ".sortMembers";
+
+	/**
 	 * Extract to method kind
 	 */
 	public static final String REFACTOR_EXTRACT_METHOD = CodeActionKind.RefactorExtract + ".function";// using `.function` instead of `.method` to match existing keybindings
@@ -84,6 +89,11 @@ public interface JavaCodeActionKind {
 	public static final String REFACTOR_EXTRACT_FIELD = CodeActionKind.RefactorExtract + ".field";
 
 	/**
+	 * Extract interface kind
+	 */
+	public static final String REFACTOR_EXTRACT_INTERFACE = CodeActionKind.RefactorExtract + ".interface";
+
+	/**
 	 * Move kind
 	 */
 	public static final String REFACTOR_MOVE = CodeActionKind.Refactor + ".move";
@@ -102,6 +112,11 @@ public interface JavaCodeActionKind {
 	 * Introduce parameter
 	 */
 	public static final String REFACTOR_INTRODUCE_PARAMETER = CodeActionKind.Refactor + ".introduce.parameter";
+
+	/**
+	 * Change Signature
+	 */
+	public static final String REFACTOR_CHANGE_SIGNATURE = CodeActionKind.Refactor + ".change.signature";
 
 	/**
 	 * Base kind for "quickassist" code actions

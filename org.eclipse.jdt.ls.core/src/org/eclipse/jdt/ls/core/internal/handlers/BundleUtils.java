@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2017, 2019 Microsoft Corporation and others.
+ * Copyright (c) 2017-2022 Microsoft Corporation and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -12,6 +12,8 @@
  *******************************************************************************/
 
 package org.eclipse.jdt.ls.core.internal.handlers;
+
+import static java.lang.String.format;
 
 import java.io.File;
 import java.io.IOException;
@@ -31,6 +33,7 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.MultiStatus;
 import org.eclipse.core.runtime.Status;
+import org.eclipse.jdt.ls.core.internal.IConstants;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.osgi.container.ModuleContainer;
 import org.eclipse.osgi.util.ManifestElement;
@@ -44,6 +47,7 @@ import org.osgi.framework.Version;
 import org.osgi.framework.namespace.IdentityNamespace;
 import org.osgi.framework.startlevel.BundleStartLevel;
 import org.osgi.framework.wiring.BundleCapability;
+import org.osgi.framework.wiring.BundleRevision;
 import org.osgi.framework.wiring.FrameworkWiring;
 import org.osgi.resource.Namespace;
 
@@ -103,7 +107,7 @@ public final class BundleUtils {
 		MultiStatus status = new MultiStatus(context.getBundle().getSymbolicName(), IStatus.OK, "Load bundle list", null);
 		Set<Bundle> bundlesToStart = new HashSet<>();
 		Set<Bundle> toRefresh = new HashSet<>();
-		FrameworkWiring frameworkWiring = context.getBundle(0).adapt(FrameworkWiring.class);
+		FrameworkWiring frameworkWiring = getFrameworkWiring();
 		for (String bundleLocation : bundleLocations) {
 			try {
 				if (StringUtils.isEmpty(bundleLocation)) {
@@ -132,7 +136,7 @@ public final class BundleUtils {
 						}
 
 						// Uninstall the singleton bundle if the location or version is not equal
-						uninstallBundle(context, bundlesToStart, toRefresh, bundles[0]);
+						uninstallBundle(bundlesToStart, toRefresh, bundles[0]);
 					} else {
 						boolean shouldSkip = false;
 						for (Bundle bundle : bundles) {
@@ -141,7 +145,7 @@ public final class BundleUtils {
 									shouldSkip = true;
 								} else {
 									// Uninstall non-singleton bundle if it's the same version but different location
-									uninstallBundle(context, bundlesToStart, toRefresh, bundle);
+									uninstallBundle(bundlesToStart, toRefresh, bundle);
 								}
 								break;
 							}
@@ -191,8 +195,6 @@ public final class BundleUtils {
 	 * Uninstall the specified bundle and update the set for bundle refreshing and
 	 * starting.
 	 *
-	 * @param context
-	 *            Bundle context
 	 * @param bundlesToStart
 	 *            The set containing bundles which need to start
 	 * @param toRefresh
@@ -203,11 +205,30 @@ public final class BundleUtils {
 	 *
 	 * @throws BundleException
 	 */
-	private static void uninstallBundle(BundleContext context, Set<Bundle> bundlesToStart, Set<Bundle> toRefresh, Bundle bundle) throws BundleException {
-		bundle.uninstall();
-		JavaLanguageServerPlugin.logInfo("Uninstalled " + bundle.getLocation());
-		toRefresh.add(bundle);
-		bundlesToStart.remove(bundle);
+	private static void uninstallBundle(Set<Bundle> bundlesToStart, Set<Bundle> toRefresh, Bundle bundle) throws BundleException {
+		if (selfExcludedFromDependencyClosure(bundle)) {
+			bundle.uninstall();
+			JavaLanguageServerPlugin.logInfo("Uninstalled " + bundle.getLocation());
+			toRefresh.add(bundle);
+			bundlesToStart.remove(bundle);
+		}
+	}
+
+	private static boolean selfExcludedFromDependencyClosure(Bundle bundle) throws BundleException {
+		Collection<Bundle> bundles = getFrameworkWiring().getDependencyClosure(Collections.singletonList(bundle));
+		for (Bundle b : bundles) {
+			if (IConstants.PLUGIN_ID.equals(b.getSymbolicName())) {
+				JavaLanguageServerPlugin.logError("Cannot refresh bundle " + b.getSymbolicName() + " because its dependency closure includes the " + IConstants.PLUGIN_ID + " bundle.");
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static FrameworkWiring getFrameworkWiring() {
+		BundleContext context = JavaLanguageServerPlugin.getBundleContext();
+		FrameworkWiring frameworkWiring = context.getBundle(0).adapt(FrameworkWiring.class);
+		return frameworkWiring;
 	}
 
 	private static Bundle[] getBundles(String symbolicName, FrameworkWiring fwkWiring) {
@@ -269,6 +290,11 @@ public final class BundleUtils {
 				status.add(new Status(IStatus.ERROR, context.getBundle().getSymbolicName(), "Could not start: " + bundle.getSymbolicName() + '(' + bundle.getLocation() + ':' + bundle.getBundleId() + ')' + ". It's state is uninstalled."));
 				continue;
 			}
+			if ((bundle.adapt(BundleRevision.class).getTypes() & BundleRevision.TYPE_FRAGMENT) != 0) {
+				JavaLanguageServerPlugin.debugTrace(format("Fragment bundle '%s' (%s) cannot be started. Skipping.", bundle.getSymbolicName(), bundle.getLocation()));
+				continue;
+			}
+
 			if (bundle.getState() == Bundle.STARTING) {
 				continue;
 			}

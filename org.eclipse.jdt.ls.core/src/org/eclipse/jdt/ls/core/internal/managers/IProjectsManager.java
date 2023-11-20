@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright (c) 2020 Microsoft Corporation and others.
+* Copyright (c) 2020-2022 Microsoft Corporation and others.
 * All rights reserved. This program and the accompanying materials
 * are made available under the terms of the Eclipse Public License 2.0
 * which accompanies this distribution, and is available at
@@ -48,6 +48,11 @@ public interface IProjectsManager {
 	Job updateProject(IProject project, boolean force);
 
 	/**
+	 * Update a set of project configurations.
+	 */
+	Job updateProjects(Collection<IProject> projects, boolean force);
+
+	/**
 	 * Check whether the resource is a build file.
 	 */
 	boolean isBuildFile(IResource resource);
@@ -91,4 +96,11 @@ public interface IProjectsManager {
 	default void unregisterListeners() {
 		// do nothing
 	};
+
+	/**
+	 * Executed after the projects are imported.
+	 */
+	default void projectsImported(IProgressMonitor monitor) {
+		// do nothing
+	}
 }

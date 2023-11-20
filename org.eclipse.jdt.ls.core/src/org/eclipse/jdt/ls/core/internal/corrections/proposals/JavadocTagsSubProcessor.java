@@ -61,6 +61,7 @@ import org.eclipse.jdt.internal.core.manipulation.util.Strings;
 import org.eclipse.jdt.internal.corext.dom.ASTNodes;
 import org.eclipse.jdt.internal.corext.dom.Bindings;
 import org.eclipse.jdt.internal.ui.text.correction.IProblemLocationCore;
+import org.eclipse.jdt.ls.core.internal.Messages;
 import org.eclipse.jdt.ls.core.internal.StatusFactory;
 import org.eclipse.jdt.ls.core.internal.corrections.CorrectionMessages;
 import org.eclipse.jdt.ls.core.internal.corrections.IInvocationContext;
@@ -84,8 +85,8 @@ public class JavadocTagsSubProcessor {
 		private final int fInsertPosition;
 		private final String fComment;
 
-		private AddJavadocCommentProposal(String name, ICompilationUnit cu, int relevance, int insertPosition, String comment) {
-			super(name, CodeActionKind.QuickFix, cu, null, relevance);
+		private AddJavadocCommentProposal(String name, ICompilationUnit cu, int relevance, String kind, int insertPosition, String comment) {
+			super(name, kind, cu, null, relevance);
 			fInsertPosition= insertPosition;
 			fComment= comment;
 		}
@@ -174,8 +175,8 @@ public class JavadocTagsSubProcessor {
 				text.setText(name);
 				newTag.fragments().add(text);
 				List<TypeParameter> params;
-				if (bodyDecl instanceof TypeDeclaration) {
-					params= ((TypeDeclaration) bodyDecl).typeParameters();
+				if (bodyDecl instanceof TypeDeclaration typeDecl) {
+					params = typeDecl.typeParameters();
 				} else {
 					params= ((MethodDeclaration) bodyDecl).typeParameters();
 				}
@@ -220,8 +221,8 @@ public class JavadocTagsSubProcessor {
 		@Override
 		protected ASTRewrite getRewrite() throws CoreException {
 			ASTRewrite rewrite= ASTRewrite.create(fBodyDecl.getAST());
-			if (fBodyDecl instanceof MethodDeclaration) {
-				insertAllMissingMethodTags(rewrite, (MethodDeclaration) fBodyDecl);
+			if (fBodyDecl instanceof MethodDeclaration methodDecl) {
+				insertAllMissingMethodTags(rewrite, methodDecl);
 			} else {
 				insertAllMissingTypeTags(rewrite, (TypeDeclaration) fBodyDecl);
 			}
@@ -235,8 +236,8 @@ public class JavadocTagsSubProcessor {
 
 			List<TypeParameter> typeParams= methodDecl.typeParameters();
 			ASTNode root= methodDecl.getRoot();
-			if (root instanceof CompilationUnit) {
-				ITypeRoot typeRoot= ((CompilationUnit) root).getTypeRoot();
+			if (root instanceof CompilationUnit unit) {
+				ITypeRoot typeRoot = unit.getTypeRoot();
 				if (typeRoot != null && !StubUtility.shouldGenerateMethodTypeParameterTags(typeRoot.getJavaProject())) {
 					typeParams= Collections.emptyList();
 				}
@@ -414,14 +415,13 @@ public class JavadocTagsSubProcessor {
 		proposals.add(proposal);
 	}
 
-	public static void getMissingJavadocCommentProposals(IInvocationContext context, IProblemLocationCore problem,
-			Collection<ChangeCorrectionProposal> proposals) throws CoreException {
-		ASTNode node= problem.getCoveringNode(context.getASTRoot());
+	public static void getMissingJavadocCommentProposals(IInvocationContext context, ASTNode node,
+			Collection<ChangeCorrectionProposal> proposals, String kind) throws CoreException {
 		if (node == null) {
 			return;
 		}
 		BodyDeclaration declaration= ASTResolving.findParentBodyDeclaration(node);
-		if (declaration == null) {
+		if (declaration == null || declaration.getJavadoc() != null) {
 			return;
 		}
 		ICompilationUnit cu= context.getCompilationUnit();
@@ -430,25 +430,30 @@ public class JavadocTagsSubProcessor {
 			return;
 		}
 
-		if (declaration instanceof MethodDeclaration) {
-			MethodDeclaration methodDecl= (MethodDeclaration) declaration;
+		if (declaration instanceof MethodDeclaration methodDecl) {
 			IMethodBinding methodBinding= methodDecl.resolveBinding();
 			IMethodBinding overridden= null;
 			if (methodBinding != null) {
 				overridden= Bindings.findOverriddenMethod(methodBinding, true);
 			}
-
+			// See org.eclipse.jdt.internal.core.manipulation.StubUtility.getMethodComment()
+			// For a method which is not a constructor and has a null return type, an NPE will throw.
+			// The following block will guard this.
+			if (!methodDecl.isConstructor() && methodDecl.getReturnType2() == null) {
+				return;
+			}
 			String string = CodeGeneration.getMethodComment(cu, binding.getName(), methodDecl, overridden,
 					String.valueOf('\n'));
-			if (string != null) {
-				String label= CorrectionMessages.JavadocTagsSubProcessor_addjavadoc_method_description;
-				proposals.add(new AddJavadocCommentProposal(label, cu, IProposalRelevance.ADD_JAVADOC_METHOD, declaration.getStartPosition(), string));
+			String methodName = methodDecl.getName().getIdentifier();
+			if (string != null && methodName != null) {
+				String label= Messages.format(CorrectionMessages.JavadocTagsSubProcessor_addjavadoc_method_description, methodName);
+				proposals.add(new AddJavadocCommentProposal(label, cu, IProposalRelevance.ADD_JAVADOC_METHOD, kind, declaration.getStartPosition(), string));
 			}
 		} else if (declaration instanceof AbstractTypeDeclaration) {
 			String typeQualifiedName= Bindings.getTypeQualifiedName(binding);
 			String[] typeParamNames;
-			if (declaration instanceof TypeDeclaration) {
-				List<TypeParameter> typeParams= ((TypeDeclaration) declaration).typeParameters();
+			if (declaration instanceof TypeDeclaration typeDecl) {
+				List<TypeParameter> typeParams = typeDecl.typeParameters();
 				typeParamNames= new String[typeParams.size()];
 				for (int i= 0; i < typeParamNames.length; i++) {
 					typeParamNames[i]= (typeParams.get(i)).getName().getIdentifier();
@@ -458,29 +463,32 @@ public class JavadocTagsSubProcessor {
 			}
 			String string = CodeGeneration.getTypeComment(cu, typeQualifiedName, typeParamNames,
 					String.valueOf('\n'));
-			if (string != null) {
-				String label= CorrectionMessages.JavadocTagsSubProcessor_addjavadoc_type_description;
-				proposals.add(new AddJavadocCommentProposal(label, cu, IProposalRelevance.ADD_JAVADOC_TYPE, declaration.getStartPosition(), string));
+
+			if (string != null && typeQualifiedName != null) {
+				String label= Messages.format(CorrectionMessages.JavadocTagsSubProcessor_addjavadoc_type_description, typeQualifiedName);
+				proposals.add(new AddJavadocCommentProposal(label, cu, IProposalRelevance.ADD_JAVADOC_TYPE, kind, declaration.getStartPosition(), string));
 			}
-		} else if (declaration instanceof FieldDeclaration) {
+		} else if (declaration instanceof FieldDeclaration fieldDecl) {
 			String comment= "/**\n *\n */\n"; //$NON-NLS-1$
-			List<VariableDeclarationFragment> fragments= ((FieldDeclaration)declaration).fragments();
+			String fieldName= null;
+			List<VariableDeclarationFragment> fragments = fieldDecl.fragments();
 			if (fragments != null && fragments.size() > 0) {
 				VariableDeclaration decl= fragments.get(0);
-				String fieldName= decl.getName().getIdentifier();
+				fieldName= decl.getName().getIdentifier();
 				String typeName= binding.getName();
 				comment = CodeGeneration.getFieldComment(cu, typeName, fieldName, String.valueOf('\n'));
 			}
-			if (comment != null) {
-				String label= CorrectionMessages.JavadocTagsSubProcessor_addjavadoc_field_description;
-				proposals.add(new AddJavadocCommentProposal(label, cu, IProposalRelevance.ADD_JAVADOC_FIELD, declaration.getStartPosition(), comment));
+			if (comment != null && fieldName != null) {
+				String label= Messages.format(CorrectionMessages.JavadocTagsSubProcessor_addjavadoc_field_description, fieldName);
+				proposals.add(new AddJavadocCommentProposal(label, cu, IProposalRelevance.ADD_JAVADOC_FIELD, kind, declaration.getStartPosition(), comment));
 			}
-		} else if (declaration instanceof EnumConstantDeclaration) {
-			EnumConstantDeclaration enumDecl= (EnumConstantDeclaration) declaration;
+		} else if (declaration instanceof EnumConstantDeclaration enumDecl) {
 			String id= enumDecl.getName().getIdentifier();
 			String comment = CodeGeneration.getFieldComment(cu, binding.getName(), id, String.valueOf('\n'));
-			String label= CorrectionMessages.JavadocTagsSubProcessor_addjavadoc_enumconst_description;
-			proposals.add(new AddJavadocCommentProposal(label, cu, IProposalRelevance.ADD_JAVADOC_ENUM, declaration.getStartPosition(), comment));
+			if (comment != null && id != null) {
+				String label=Messages.format(CorrectionMessages.JavadocTagsSubProcessor_addjavadoc_enumconst_description, id);
+				proposals.add(new AddJavadocCommentProposal(label, cu, IProposalRelevance.ADD_JAVADOC_ENUM, kind, declaration.getStartPosition(), comment));
+			}
 		}
 	}
 
@@ -640,15 +648,15 @@ public class JavadocTagsSubProcessor {
 		List<? extends ASTNode> fragments= curr.fragments();
 		if (!fragments.isEmpty()) {
 			Object first= fragments.get(0);
-			if (first instanceof Name) {
-				return ASTNodes.getSimpleNameIdentifier((Name) first);
-			} else if (first instanceof TextElement && TagElement.TAG_PARAM.equals(curr.getTagName())) {
-				String text= ((TextElement) first).getText();
+			if (first instanceof Name name) {
+				return ASTNodes.getSimpleNameIdentifier(name);
+			} else if (first instanceof TextElement firstTextElement && TagElement.TAG_PARAM.equals(curr.getTagName())) {
+				String text = firstTextElement.getText();
 				if ("<".equals(text) && fragments.size() >= 3) { //$NON-NLS-1$
 					Object second= fragments.get(1);
 					Object third= fragments.get(2);
-					if (second instanceof Name && third instanceof TextElement && ">".equals(((TextElement) third).getText())) { //$NON-NLS-1$
-						return '<' + ASTNodes.getSimpleNameIdentifier((Name) second) + '>';
+					if (second instanceof Name secondName && third instanceof TextElement thirdTextElement && ">".equals(thirdTextElement.getText())) { //$NON-NLS-1$
+						return '<' + ASTNodes.getSimpleNameIdentifier(secondName) + '>';
 					}
 				} else if (text.startsWith(String.valueOf('<')) && text.endsWith(String.valueOf('>')) && text.length() > 2) {
 					return text.substring(1, text.length() - 1);

@@ -79,7 +79,6 @@ import org.eclipse.jdt.core.dom.FieldDeclaration;
 import org.eclipse.jdt.core.dom.ImportDeclaration;
 import org.eclipse.jdt.core.dom.Javadoc;
 import org.eclipse.jdt.core.dom.MethodDeclaration;
-import org.eclipse.jdt.core.dom.Name;
 import org.eclipse.jdt.core.dom.PackageDeclaration;
 import org.eclipse.jdt.core.dom.SimpleName;
 import org.eclipse.jdt.core.dom.SwitchStatement;
@@ -103,7 +102,9 @@ import org.eclipse.jdt.internal.corext.refactoring.Checks;
 import org.eclipse.jdt.internal.corext.refactoring.JDTRefactoringDescriptorComment;
 import org.eclipse.jdt.internal.corext.refactoring.JavaRefactoringArguments;
 import org.eclipse.jdt.internal.corext.refactoring.JavaRefactoringDescriptorUtil;
+import org.eclipse.jdt.internal.corext.refactoring.RefactoringCoreMessages;
 import org.eclipse.jdt.internal.corext.refactoring.changes.DynamicValidationStateChange;
+import org.eclipse.jdt.internal.corext.refactoring.reorg.ASTNodeDeleteUtil;
 import org.eclipse.jdt.internal.corext.refactoring.reorg.CreateTargetExecutionLog;
 import org.eclipse.jdt.internal.corext.refactoring.reorg.ICreateTargetQueries;
 import org.eclipse.jdt.internal.corext.refactoring.reorg.ICreateTargetQuery;
@@ -125,7 +126,6 @@ import org.eclipse.jdt.internal.corext.util.JavaConventionsUtil;
 import org.eclipse.jdt.internal.corext.util.JavaModelUtil;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.Messages;
-import org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringCoreMessages;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.changes.CopyCompilationUnitChange;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.changes.CopyPackageChange;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.changes.CopyPackageFragmentRootChange;
@@ -139,7 +139,7 @@ import org.eclipse.jdt.ls.core.internal.corext.refactoring.util.QualifiedNameFin
 import org.eclipse.jdt.ls.core.internal.corext.util.Changes;
 import org.eclipse.jdt.ls.core.internal.corext.util.JavaElementResourceMapping;
 import org.eclipse.jdt.ls.core.internal.corext.util.QualifiedNameSearchResult;
-import org.eclipse.jdt.ls.core.internal.hover.JavaElementLabels;
+import org.eclipse.jdt.internal.core.manipulation.JavaElementLabelsCore;
 import org.eclipse.ltk.core.refactoring.Change;
 import org.eclipse.ltk.core.refactoring.ChangeDescriptor;
 import org.eclipse.ltk.core.refactoring.CompositeChange;
@@ -3636,7 +3636,7 @@ public final class ReorgPolicyFactory {
 			if (destination == null) {
 				destination= getResourceDestination();
 			}
-			return JavaElementLabels.getTextLabel(destination, JavaElementLabels.ALL_FULLY_QUALIFIED);
+			return JavaElementLabelsCore.getTextLabel(destination, JavaElementLabelsCore.ALL_FULLY_QUALIFIED);
 		}
 
 		protected abstract String getHeaderPatternSingular();
@@ -3959,7 +3959,7 @@ public final class ReorgPolicyFactory {
 				BodyDeclaration decl= ASTNodeSearchUtil.getBodyDeclarationNode(member, sourceCuNode);
 				if (decl != null) {
 					ImportRewriteContext context= new ContextSensitiveImportRewriteContext(destinationContainer, targetRewriter.getImportRewrite());
-					ImportRewriteUtil.addImports(targetRewriter, context, decl, new HashMap<Name, String>(), new HashMap<Name, String>(), false);
+					ImportRewriteUtil.addImports(targetRewriter, context, decl, new HashMap<>(), new HashMap<>(), false);
 				}
 			}
 		}
@@ -4114,7 +4114,7 @@ public final class ReorgPolicyFactory {
 			final IProject resource= getSingleProject();
 			final String project= resource != null ? resource.getName() : null;
 			final String header= length == 1 ? Messages.format(getHeaderPatternSingular(), new String[] {
-					JavaElementLabels.getTextLabel(fJavaElements[0].getElementName(), JavaElementLabels.ALL_FULLY_QUALIFIED), getDestinationLabel() }) : Messages.format(getHeaderPatternPlural(),
+					JavaElementLabelsCore.getTextLabel(fJavaElements[0].getElementName(), JavaElementLabelsCore.ALL_FULLY_QUALIFIED), getDestinationLabel() }) : Messages.format(getHeaderPatternPlural(),
 					new String[] { String.valueOf(length), getDestinationLabel() });
 			int flags= JavaRefactoringDescriptor.JAR_REFACTORING | JavaRefactoringDescriptor.JAR_MIGRATION | RefactoringDescriptor.STRUCTURAL_CHANGE | RefactoringDescriptor.MULTI_CHANGE;
 			final JDTRefactoringDescriptorComment comment= new JDTRefactoringDescriptorComment(project, this, header);

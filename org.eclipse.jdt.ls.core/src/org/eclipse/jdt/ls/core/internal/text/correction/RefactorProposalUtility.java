@@ -18,12 +18,16 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.apache.commons.lang3.StringUtils;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.IField;
+import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IJavaModelMarker;
 import org.eclipse.jdt.core.IMember;
 import org.eclipse.jdt.core.IMethod;
@@ -33,8 +37,10 @@ import org.eclipse.jdt.core.compiler.IProblem;
 import org.eclipse.jdt.core.dom.ASTNode;
 import org.eclipse.jdt.core.dom.AbstractTypeDeclaration;
 import org.eclipse.jdt.core.dom.AnonymousClassDeclaration;
+import org.eclipse.jdt.core.dom.Assignment;
 import org.eclipse.jdt.core.dom.Block;
 import org.eclipse.jdt.core.dom.BodyDeclaration;
+import org.eclipse.jdt.core.dom.CompilationUnit;
 import org.eclipse.jdt.core.dom.Expression;
 import org.eclipse.jdt.core.dom.ExpressionStatement;
 import org.eclipse.jdt.core.dom.FieldDeclaration;
@@ -43,6 +49,7 @@ import org.eclipse.jdt.core.dom.IMethodBinding;
 import org.eclipse.jdt.core.dom.ITypeBinding;
 import org.eclipse.jdt.core.dom.IVariableBinding;
 import org.eclipse.jdt.core.dom.MethodDeclaration;
+import org.eclipse.jdt.core.dom.NodeFinder;
 import org.eclipse.jdt.core.dom.ParenthesizedExpression;
 import org.eclipse.jdt.core.dom.SimpleName;
 import org.eclipse.jdt.core.dom.Statement;
@@ -51,18 +58,26 @@ import org.eclipse.jdt.core.dom.VariableDeclaration;
 import org.eclipse.jdt.core.dom.VariableDeclarationFragment;
 import org.eclipse.jdt.core.dom.VariableDeclarationStatement;
 import org.eclipse.jdt.internal.core.manipulation.dom.ASTResolving;
+import org.eclipse.jdt.internal.corext.codemanipulation.CodeGenerationSettings;
 import org.eclipse.jdt.internal.corext.dom.ASTNodes;
 import org.eclipse.jdt.internal.corext.dom.Bindings;
+import org.eclipse.jdt.internal.corext.dom.Selection;
+import org.eclipse.jdt.internal.corext.dom.SelectionAnalyzer;
 import org.eclipse.jdt.internal.corext.fix.LinkedProposalModelCore;
+import org.eclipse.jdt.internal.corext.refactoring.ExceptionInfo;
+import org.eclipse.jdt.internal.corext.refactoring.ParameterInfo;
 import org.eclipse.jdt.internal.corext.refactoring.RefactoringAvailabilityTesterCore;
+import org.eclipse.jdt.internal.corext.refactoring.RefactoringCoreMessages;
 import org.eclipse.jdt.internal.corext.refactoring.code.PromoteTempToFieldRefactoring;
+import org.eclipse.jdt.internal.corext.refactoring.structure.ChangeSignatureProcessor;
+import org.eclipse.jdt.internal.corext.refactoring.structure.ExtractInterfaceProcessor;
 import org.eclipse.jdt.internal.corext.util.JdtFlags;
 import org.eclipse.jdt.internal.ui.text.correction.IProblemLocationCore;
 import org.eclipse.jdt.ls.core.internal.JDTUtils;
 import org.eclipse.jdt.ls.core.internal.JavaCodeActionKind;
+import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.Messages;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringAvailabilityTester;
-import org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringCoreMessages;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.code.ExtractConstantRefactoring;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.code.ExtractFieldRefactoring;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.code.ExtractMethodRefactoring;
@@ -72,8 +87,12 @@ import org.eclipse.jdt.ls.core.internal.corrections.CorrectionMessages;
 import org.eclipse.jdt.ls.core.internal.corrections.IInvocationContext;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.AssignToVariableAssistProposal;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.CUCorrectionProposal;
+import org.eclipse.jdt.ls.core.internal.corrections.proposals.ChangeCorrectionProposal;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.IProposalRelevance;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.RefactoringCorrectionProposal;
+import org.eclipse.jdt.ls.core.internal.handlers.ChangeSignatureHandler.MethodException;
+import org.eclipse.jdt.ls.core.internal.handlers.ChangeSignatureHandler.MethodParameter;
+import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.lsp4j.CodeActionKind;
 import org.eclipse.lsp4j.CodeActionParams;
 import org.eclipse.ltk.core.refactoring.Refactoring;
@@ -86,6 +105,8 @@ public class RefactorProposalUtility {
 	public static final String EXTRACT_CONSTANT_COMMAND = "extractConstant";
 	public static final String EXTRACT_METHOD_COMMAND = "extractMethod";
 	public static final String EXTRACT_FIELD_COMMAND = "extractField";
+	public static final String EXTRACT_INTERFACE_COMMAND = "extractInterface";
+	public static final String CHANGE_SIGNATURE_COMMAND = "changeSignature";
 	public static final String ASSIGN_FIELD_COMMAND = "assignField";
 	public static final String CONVERT_VARIABLE_TO_FIELD_COMMAND = "convertVariableToField";
 	public static final String MOVE_FILE_COMMAND = "moveFile";
@@ -114,9 +135,9 @@ public class RefactorProposalUtility {
 					int memberType = node.getNodeType();
 					String enclosingTypeName = getEnclosingType(node);
 					String projectName = cu.getJavaProject().getProject().getName();
-					if (node instanceof AbstractTypeDeclaration) {
+					if (node instanceof AbstractTypeDeclaration typeDecl) {
 						MoveTypeInfo moveTypeInfo = new MoveTypeInfo(displayName, enclosingTypeName, projectName);
-						if (isMoveInnerAvailable((AbstractTypeDeclaration) node)) {
+						if (isMoveInnerAvailable(typeDecl)) {
 							moveTypeInfo.addDestinationKind("newFile");
 						}
 
@@ -140,9 +161,9 @@ public class RefactorProposalUtility {
 							return Collections.singletonList(new CUCorrectionCommandProposal(label, JavaCodeActionKind.REFACTOR_MOVE, cu, relevance, APPLY_REFACTORING_COMMAND_ID,
 									Arrays.asList(MOVE_STATIC_MEMBER_COMMAND, params, new MoveMemberInfo(displayName, memberType, enclosingTypeName, projectName))));
 						}
-					} else if (node instanceof MethodDeclaration) {
+					} else if (node instanceof MethodDeclaration methodDecl) {
 						// move instance method.
-						if (isMoveMethodAvailable((MethodDeclaration) node)) {
+						if (isMoveMethodAvailable(methodDecl)) {
 							return Collections.singletonList(new CUCorrectionCommandProposal(label, JavaCodeActionKind.REFACTOR_MOVE, cu, relevance, APPLY_REFACTORING_COMMAND_ID,
 									Arrays.asList(MOVE_INSTANCE_METHOD_COMMAND, params, new MoveMemberInfo(displayName))));
 						}
@@ -191,20 +212,20 @@ public class RefactorProposalUtility {
 	}
 
 	private static boolean isMoveStaticMemberAvailable(ASTNode declaration) throws JavaModelException {
-		if (declaration instanceof MethodDeclaration) {
-			IMethodBinding method = ((MethodDeclaration) declaration).resolveBinding();
+		if (declaration instanceof MethodDeclaration methodDecl) {
+			IMethodBinding method = methodDecl.resolveBinding();
 			return method != null && RefactoringAvailabilityTesterCore.isMoveStaticAvailable((IMember) method.getJavaElement());
-		} else if (declaration instanceof FieldDeclaration) {
+		} else if (declaration instanceof FieldDeclaration fieldDecl) {
 			List<IMember> members = new ArrayList<>();
-			for (Object fragment : ((FieldDeclaration) declaration).fragments()) {
+			for (Object fragment : fieldDecl.fragments()) {
 				IVariableBinding variable = ((VariableDeclarationFragment) fragment).resolveBinding();
 				if (variable != null) {
 					members.add((IField) variable.getJavaElement());
 				}
 			}
 			return RefactoringAvailabilityTesterCore.isMoveStaticMembersAvailable(members.toArray(new IMember[0]));
-		} else if (declaration instanceof AbstractTypeDeclaration) {
-			ITypeBinding type = ((AbstractTypeDeclaration) declaration).resolveBinding();
+		} else if (declaration instanceof AbstractTypeDeclaration typeDecl) {
+			ITypeBinding type = typeDecl.resolveBinding();
 			return type != null && RefactoringAvailabilityTesterCore.isMoveStaticAvailable((IType) type.getJavaElement());
 		}
 
@@ -221,24 +242,24 @@ public class RefactorProposalUtility {
 	}
 
 	private static String getDisplayName(ASTNode declaration) {
-		if (declaration instanceof MethodDeclaration) {
-			IMethodBinding method = ((MethodDeclaration) declaration).resolveBinding();
+		if (declaration instanceof MethodDeclaration methodDecl) {
+			IMethodBinding method = methodDecl.resolveBinding();
 			if (method != null) {
 				String name = method.getName();
 				String[] parameters = Stream.of(method.getParameterTypes()).map(type -> type.getName()).toArray(String[]::new);
 				return name + "(" + String.join(",", parameters) + ")";
 			}
-		} else if (declaration instanceof FieldDeclaration) {
+		} else if (declaration instanceof FieldDeclaration fieldDecl) {
 			List<String> fieldNames = new ArrayList<>();
-			for (Object fragment : ((FieldDeclaration) declaration).fragments()) {
+			for (Object fragment : fieldDecl.fragments()) {
 				IVariableBinding variable = ((VariableDeclarationFragment) fragment).resolveBinding();
 				if (variable != null) {
 					fieldNames.add(variable.getName());
 				}
 			}
 			return String.join(",", fieldNames);
-		} else if (declaration instanceof AbstractTypeDeclaration) {
-			ITypeBinding type = ((AbstractTypeDeclaration) declaration).resolveBinding();
+		} else if (declaration instanceof AbstractTypeDeclaration typeDecl) {
+			ITypeBinding type = typeDecl.resolveBinding();
 			if (type != null) {
 				return type.getName();
 			}
@@ -760,7 +781,8 @@ public class RefactorProposalUtility {
 
 		final ICompilationUnit cu = context.getCompilationUnit();
 		final ExtractMethodRefactoring extractMethodRefactoring = new ExtractMethodRefactoring(context.getASTRoot(), context.getSelectionOffset(), context.getSelectionLength(), formattingOptions);
-		String uniqueMethodName = getUniqueMethodName(coveringNode, "extracted");
+		String suggestedName = proposeMethodNameHeuristic(context, coveringNode);
+		String uniqueMethodName = getUniqueMethodName(coveringNode, suggestedName);
 		extractMethodRefactoring.setMethodName(uniqueMethodName);
 		String label = CorrectionMessages.QuickAssistProcessor_extractmethod_description;
 		int relevance = problemsAtLocation ? IProposalRelevance.EXTRACT_METHOD_ERROR : IProposalRelevance.EXTRACT_METHOD;
@@ -796,6 +818,50 @@ public class RefactorProposalUtility {
 		return null;
 	}
 
+	private static String proposeMethodNameHeuristic(IInvocationContext context, ASTNode coveringNode) {
+
+		int selStart = context.getSelectionOffset();
+		int selEnd = context.getSelectionOffset() + context.getSelectionLength();
+
+		CompilationUnit cu = context.getASTRoot();
+
+		// Last unused local variable
+		Optional<IProblem> res = Arrays.asList(cu.getProblems()).stream().filter(p -> p.getID() == IProblem.LocalVariableIsNeverUsed).filter(p -> p.getSourceStart() >= selStart && p.getSourceEnd() <= selEnd)
+				.max((p1, p2) -> p1.getSourceStart() - p2.getSourceStart());
+		if (res.isPresent()) {
+			IProblem problem = res.get();
+			NodeFinder finder = new NodeFinder(cu, problem.getSourceStart(), problem.getSourceEnd() - problem.getSourceStart());
+			ASTNode nodeVar = finder.getCoveringNode();
+			if (nodeVar instanceof SimpleName) {
+				return "get" + StringUtils.capitalize(((SimpleName) nodeVar).getIdentifier());
+			}
+		}
+
+		// Last local variable
+		SelectionAnalyzer analyzer = new SelectionAnalyzer(Selection.createFromStartLength(context.getSelectionOffset(), context.getSelectionLength()), true);
+		cu.accept(analyzer);
+		List<ASTNode> varDeclStatements = Arrays.asList(analyzer.getSelectedNodes()).stream().filter(e -> e.getNodeType() == ASTNode.VARIABLE_DECLARATION_STATEMENT).collect(Collectors.toList());
+		// Check for entire covering node for local variable
+		if (varDeclStatements.isEmpty() && coveringNode.getNodeType() == ASTNode.VARIABLE_DECLARATION_STATEMENT) {
+			varDeclStatements.add(coveringNode);
+		// Check for assignment statement for left hand side variable
+		} else if (coveringNode.getNodeType() == ASTNode.EXPRESSION_STATEMENT && ((ExpressionStatement) coveringNode).getExpression().getNodeType() == ASTNode.ASSIGNMENT) {
+			Expression leftHandSide = ((Assignment) ((ExpressionStatement) coveringNode).getExpression()).getLeftHandSide();
+			if (leftHandSide.getNodeType() == ASTNode.SIMPLE_NAME) {
+				return "get" + StringUtils.capitalize(((SimpleName) leftHandSide).getIdentifier());
+			}
+		}
+		if (!varDeclStatements.isEmpty()) {
+			VariableDeclarationStatement lastStatement = (VariableDeclarationStatement) varDeclStatements.get(varDeclStatements.size() - 1);
+			List<?> fragments = lastStatement.fragments();
+			VariableDeclarationFragment fragment = (VariableDeclarationFragment) fragments.get(0);
+			String identifier = fragment.getName().getIdentifier();
+			return "get" + StringUtils.capitalize(identifier);
+		}
+
+		return "extracted";
+	}
+
 	public static CUCorrectionProposal getIntroduceParameterRefactoringProposals(CodeActionParams params, IInvocationContext context, ASTNode coveringNode, boolean returnAsCommand, IProblemLocationCore[] problemLocations)
 			throws CoreException {
 		final ICompilationUnit cu = context.getCompilationUnit();
@@ -816,12 +882,91 @@ public class RefactorProposalUtility {
 		return null;
 	}
 
+	public static ChangeCorrectionProposal getExtractInterfaceProposal(CodeActionParams params, IInvocationContext context) {
+		ICompilationUnit cu = context.getCompilationUnit();
+		if (cu == null) {
+			return null;
+		}
+		IType type = cu.findPrimaryType();
+		if (type == null) {
+			return null;
+		}
+		try {
+			CodeGenerationSettings settings = PreferenceManager.getCodeGenerationSettings(cu);
+			ExtractInterfaceProcessor processor = new ExtractInterfaceProcessor(type, settings);
+			if (RefactoringAvailabilityTester.isExtractInterfaceAvailable(type) && processor.checkInitialConditions(new NullProgressMonitor()).isOK()) {
+				return new CUCorrectionCommandProposal(CorrectionMessages.RefactorProcessor_extract_interface, JavaCodeActionKind.REFACTOR_EXTRACT_INTERFACE, cu, IProposalRelevance.EXTRACT_INTERFACE, RefactorProposalUtility.APPLY_REFACTORING_COMMAND_ID, Arrays.asList(RefactorProposalUtility.EXTRACT_INTERFACE_COMMAND, params));
+			}
+		} catch (CoreException e) {
+			// Do nothing
+		}
+		return null;
+	}
+
+	public static ChangeCorrectionProposal getChangeSignatureProposal(CodeActionParams params, IInvocationContext context) {
+		ICompilationUnit cu = context.getCompilationUnit();
+		if (cu == null) {
+			return null;
+		}
+		ASTNode methodNode = CodeActionUtility.inferASTNode(context.getCoveringNode(), MethodDeclaration.class);
+		if (methodNode == null) {
+			return null;
+		}
+		IMethodBinding methodBinding = ((MethodDeclaration) methodNode).resolveBinding();
+		if (methodBinding == null) {
+			return null;
+		}
+		IJavaElement element = methodBinding.getJavaElement();
+		if (element instanceof IMethod method) {
+			try {
+				ChangeSignatureProcessor processor = new ChangeSignatureProcessor(method);
+				if (RefactoringAvailabilityTester.isChangeSignatureAvailable(method) && processor.checkInitialConditions(new NullProgressMonitor()).isOK()) {
+					List<MethodParameter> parameters = new ArrayList<>();
+					for (ParameterInfo info : processor.getParameterInfos()) {
+						parameters.add(new MethodParameter(info.getOldTypeName(), info.getOldName(), info.getDefaultValue() == null ? "null" : info.getDefaultValue(), info.getOldIndex()));
+					}
+					List<MethodException> exceptions = new ArrayList<>();
+					for (ExceptionInfo info : processor.getExceptionInfos()) {
+						exceptions.add(new MethodException(info.getFullyQualifiedName(), info.getElement().getHandleIdentifier()));
+					}
+					ChangeSignatureInfo info = new ChangeSignatureInfo(method.getHandleIdentifier(), JdtFlags.getVisibilityString(processor.getVisibility()), processor.getReturnTypeString(), method.getElementName(),
+							parameters.toArray(MethodParameter[]::new), exceptions.toArray(MethodException[]::new));
+					String label = Messages.format(org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringCoreMessages.ChangeSignatureRefactoring_change_signature_for, new String[] { method.getElementName() });
+					return new CUCorrectionCommandProposal(label, JavaCodeActionKind.REFACTOR_CHANGE_SIGNATURE, cu, IProposalRelevance.CHANGE_METHOD_SIGNATURE, RefactorProposalUtility.APPLY_REFACTORING_COMMAND_ID,
+							Arrays.asList(RefactorProposalUtility.CHANGE_SIGNATURE_COMMAND, params, info));
+				}
+			} catch (CoreException e) {
+				JavaLanguageServerPlugin.logException(e);
+			}
+		}
+		return null;
+	}
+
+	public static class ChangeSignatureInfo {
+
+		public String methodIdentifier;
+		public String modifier;
+		public String returnType;
+		public String methodName;
+		public MethodParameter[] parameters;
+		public MethodException[] exceptions;
+
+		public ChangeSignatureInfo(String methodIdentifier, String modifier, String returnType, String methodName, MethodParameter[] parameters, MethodException[] exceptions) {
+			this.methodIdentifier = methodIdentifier;
+			this.modifier = modifier;
+			this.returnType = returnType;
+			this.methodName = methodName;
+			this.parameters = parameters;
+			this.exceptions = exceptions;
+		}
+	}
+
 	public static String getUniqueMethodName(ASTNode astNode, String suggestedName) throws JavaModelException {
 		while (astNode != null && !(astNode instanceof TypeDeclaration || astNode instanceof AnonymousClassDeclaration)) {
 			astNode = astNode.getParent();
 		}
-		if (astNode instanceof TypeDeclaration) {
-			ITypeBinding typeBinding = ((TypeDeclaration) astNode).resolveBinding();
+		if (astNode instanceof TypeDeclaration typeDecl) {
+			ITypeBinding typeBinding = typeDecl.resolveBinding();
 			if (typeBinding == null) {
 				return suggestedName;
 			}

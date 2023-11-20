@@ -32,7 +32,7 @@ import org.eclipse.jdt.core.dom.AbstractTypeDeclaration;
 import org.eclipse.jdt.core.dom.CompilationUnit;
 import org.eclipse.jdt.core.dom.Modifier;
 import org.eclipse.jdt.core.dom.SimpleName;
-import org.eclipse.jdt.core.manipulation.OrganizeImportsOperation;
+import org.eclipse.jdt.core.manipulation.ICleanUpFixCore;
 import org.eclipse.jdt.core.refactoring.CompilationUnitChange;
 import org.eclipse.jdt.internal.core.manipulation.util.BasicElementLabels;
 import org.eclipse.jdt.internal.corext.fix.IProposableFix;
@@ -45,10 +45,8 @@ import org.eclipse.jdt.ls.core.internal.corext.refactoring.changes.MoveCompilati
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.changes.RenameCompilationUnitChange;
 import org.eclipse.jdt.ls.core.internal.corrections.CorrectionMessages;
 import org.eclipse.jdt.ls.core.internal.corrections.IInvocationContext;
-import org.eclipse.jdt.ls.core.internal.hover.JavaElementLabels;
-import org.eclipse.jface.text.IDocument;
+import org.eclipse.jdt.internal.core.manipulation.JavaElementLabelsCore;
 import org.eclipse.lsp4j.CodeActionKind;
-import org.eclipse.text.edits.TextEdit;
 
 
 public class ReorgCorrectionsSubProcessor {
@@ -136,7 +134,7 @@ public class ReorgCorrectionsSubProcessor {
 			if (newPack.isDefaultPackage()) {
 				label= Messages.format(CorrectionMessages.ReorgCorrectionsSubProcessor_movecu_default_description, BasicElementLabels.getFileName(cu));
 			} else {
-				String packageLabel= JavaElementLabels.getElementLabel(newPack, JavaElementLabels.ALL_DEFAULT);
+				String packageLabel= JavaElementLabelsCore.getElementLabel(newPack, JavaElementLabelsCore.ALL_DEFAULT);
 				label= Messages.format(CorrectionMessages.ReorgCorrectionsSubProcessor_movecu_description, new Object[] { BasicElementLabels.getFileName(cu), packageLabel });
 			}
 
@@ -145,7 +143,7 @@ public class ReorgCorrectionsSubProcessor {
 	}
 
 	public static void removeImportStatementProposals(IInvocationContext context, IProblemLocationCore problem,
-			Collection<ChangeCorrectionProposal> proposals) {
+			Collection<ChangeCorrectionProposal> proposals) throws CoreException {
 		IProposableFix fix = UnusedCodeFixCore.createRemoveUnusedImportFix(context.getASTRoot(), problem);
 		if (fix != null) {
 			try {
@@ -156,6 +154,13 @@ public class ReorgCorrectionsSubProcessor {
 			} catch (CoreException e) {
 				JavaLanguageServerPlugin.log(e);
 			}
+		}
+		ICleanUpFixCore removeAllUnusedImportsFix = UnusedCodeFixCore.createCleanUp(context.getASTRoot(), false, false, false, false, false, true, false, false);
+		if (removeAllUnusedImportsFix != null) {
+			CompilationUnitChange change = removeAllUnusedImportsFix.createChange(null);
+			CUCorrectionProposal proposal = new CUCorrectionProposal(CorrectionMessages.ReorgCorrectionsSubProcessor_remove_all_unused_imports, CodeActionKind.QuickFix, change.getCompilationUnit(),
+				change, IProposalRelevance.REMOVE_UNUSED_IMPORT);
+			proposals.add(proposal);
 		}
 	}
 }

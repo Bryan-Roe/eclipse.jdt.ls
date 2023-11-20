@@ -6,7 +6,7 @@
 	<groupId>org.eclipse.jdt.ls</groupId>
 	<artifactId>parent</artifactId>
 	<name>${base.name} :: Parent</name>
-	<version>1.13.0-SNAPSHOT</version>
+	<version>1.30.0-SNAPSHOT</version>
 	<packaging>pom</packaging>
 	<licenses>
 		<license>
@@ -18,7 +18,7 @@
 	<properties>
 		<base.name>JDT Language Server</base.name>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-		<tycho-version>2.7.2</tycho-version>
+		<tycho-version>4.0.4</tycho-version>
 		<tycho-extras-version>${tycho-version}</tycho-extras-version>
 		<tycho.scmUrl>scm:git:https://github.com/eclipse/eclipse.jdt.ls.git</tycho.scmUrl>
 		<sonar.dynamicAnalysis>reuseReports</sonar.dynamicAnalysis>
@@ -35,7 +35,9 @@
 	<modules>
 		<module>org.eclipse.jdt.ls.target</module>
 		<module>org.eclipse.jdt.ls.core</module>
+		<module>org.eclipse.jdt.ls.filesystem</module>
 		<module>org.eclipse.jdt.ls.tests</module>
+		<module>org.eclipse.jdt.ls.logback.appender</module>
 		<module>org.eclipse.jdt.ls.tests.syntaxserver</module>
 		<module>org.eclipse.jdt.ls.product</module>
 	</modules>
@@ -61,6 +63,7 @@
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-dependency-plugin</artifactId>
+					<version>3.6.1</version>
 					<executions>
 						<execution>
 							<?m2e execute onConfiguration?>
@@ -83,7 +86,7 @@
 					<!-- make sure lib dir is removed after clean to avoid "dirty" build -->
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-clean-plugin</artifactId>
-					<version>3.0.0</version>
+					<version>3.3.2</version>
 					<configuration>
 						<filesets>
 							<fileset>
@@ -112,7 +115,7 @@
 				<plugin>
 					<groupId>org.eclipse.cbi.maven.plugins</groupId>
 					<artifactId>eclipse-jarsigner-plugin</artifactId>
-					<version>1.3.2</version>
+					<version>1.4.3</version>
 					<executions>
 						<execution>
 							<id>sign</id>
@@ -145,7 +148,6 @@
 					<artifactId>target-platform-configuration</artifactId>
 					<version>${tycho-version}</version>
 					<configuration>
-						<resolver>p2</resolver>
 						<target>
 							<artifact>
 								<groupId>org.eclipse.jdt.ls</groupId>
@@ -160,6 +162,11 @@
 								<arch>x86_64</arch>
 							</environment>
 							<environment>
+								<os>linux</os>
+								<ws>gtk</ws>
+								<arch>aarch64</arch>
+							</environment>
+							<environment>
 								<os>win32</os>
 								<ws>win32</ws>
 								<arch>x86_64</arch>
@@ -168,6 +175,11 @@
 								<os>macosx</os>
 								<ws>cocoa</ws>
 								<arch>x86_64</arch>
+							</environment>
+							<environment>
+								<os>macosx</os>
+								<ws>cocoa</ws>
+								<arch>aarch64</arch>
 							</environment>
 						</environments>
 						<dependency-resolution>
@@ -225,7 +237,7 @@
 					<plugin>
 						<groupId>org.jacoco</groupId>
 						<artifactId>jacoco-maven-plugin</artifactId>
-						<version>0.8.7</version>
+						<version>0.8.11</version>
 						<executions>
 							<execution>
 								<goals>

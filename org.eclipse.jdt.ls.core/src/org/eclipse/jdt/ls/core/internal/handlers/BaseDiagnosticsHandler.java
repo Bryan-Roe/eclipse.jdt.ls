@@ -19,9 +19,12 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
+import org.eclipse.core.resources.IMarker;
+import org.eclipse.core.resources.IResource;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.jdt.core.IBuffer;
 import org.eclipse.jdt.core.ICompilationUnit;
+import org.eclipse.jdt.core.IJavaModelMarker;
 import org.eclipse.jdt.core.IOpenable;
 import org.eclipse.jdt.core.IProblemRequestor;
 import org.eclipse.jdt.core.JavaModelException;
@@ -31,6 +34,7 @@ import org.eclipse.jdt.ls.core.internal.JDTUtils;
 import org.eclipse.jdt.ls.core.internal.JavaClientConnection;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.ResourceUtils;
+import org.eclipse.jface.text.IDocument;
 import org.eclipse.lsp4j.Diagnostic;
 import org.eclipse.lsp4j.DiagnosticSeverity;
 import org.eclipse.lsp4j.DiagnosticTag;
@@ -127,8 +131,60 @@ public abstract class BaseDiagnosticsHandler implements IProblemRequestor {
 	public void endReporting() {
 		JavaLanguageServerPlugin.logInfo(problems.size() + " problems reported for " + this.uri.substring(this.uri.lastIndexOf('/')));
 		boolean isDiagnosticTagSupported = JavaLanguageServerPlugin.getPreferencesManager().getClientPreferences().isDiagnosticTagSupported();
-		PublishDiagnosticsParams $ = new PublishDiagnosticsParams(ResourceUtils.toClientUri(uri), toDiagnosticsArray(this.cu, problems, isDiagnosticTagSupported));
+		List<Diagnostic> diagnostics = toDiagnosticsArray(this.cu, problems, isDiagnosticTagSupported);
+		collectNonJavaProblems(diagnostics, isDiagnosticTagSupported);
+		PublishDiagnosticsParams $ = new PublishDiagnosticsParams(ResourceUtils.toClientUri(uri), diagnostics);
 		this.connection.publishDiagnostics($);
+	}
+
+	/**
+	 * @param diagnostics
+	 * @param isDiagnosticTagSupported
+	 */
+	private void collectNonJavaProblems(List<Diagnostic> diagnostics, boolean isDiagnosticTagSupported) {
+		if (cu != null) {
+			IResource resource;
+			IMarker[] markers;
+			try {
+				resource = cu.getUnderlyingResource();
+				if (resource != null) {
+					markers = resource.findMarkers(null, true, IResource.DEPTH_ONE);
+				} else {
+					return;
+				}
+			} catch (CoreException e) {
+				JavaLanguageServerPlugin.logException(e.getMessage(), e);
+				return;
+			}
+			List<IMarker> list = Arrays.stream(markers).filter(marker -> {
+				try {
+					return !marker.isSubtypeOf(IJavaModelMarker.JAVA_MODEL_PROBLEM_MARKER) //
+							&& !marker.isSubtypeOf(IJavaModelMarker.TASK_MARKER) //
+							&& JavaLanguageServerPlugin.getPreferencesManager().getClientPreferences().excludedMarkerTypes().stream().noneMatch(excluded -> {
+								try {
+									return marker.isSubtypeOf(excluded);
+								} catch (CoreException e) {
+									JavaLanguageServerPlugin.log(e);
+									return false;
+								}
+							});
+				} catch (CoreException e) {
+					JavaLanguageServerPlugin.log(e);
+					return false;
+				}
+			}).toList();
+			if (!list.isEmpty()) {
+				IDocument document;
+				try {
+					document = JsonRpcHelpers.toDocument(cu.getBuffer());
+				} catch (JavaModelException e) {
+					JavaLanguageServerPlugin.logException(e.getMessage(), e);
+					return;
+				}
+				List<Diagnostic> diags = WorkspaceDiagnosticsHandler.toDiagnosticsArray(document, list.toArray(new IMarker[0]), isDiagnosticTagSupported);
+				diagnostics.addAll(diags);
+			}
+		}
 	}
 
 	@Override
@@ -236,8 +292,7 @@ public abstract class BaseDiagnosticsHandler implements IProblemRequestor {
 
 	private static Range convertRange(IOpenable openable, IProblem problem) {
 		try {
-			if (problem.getID() == IProblem.UndefinedType && openable instanceof ICompilationUnit) {
-				ICompilationUnit cu = (ICompilationUnit) openable;
+			if (problem.getID() == IProblem.UndefinedType && openable instanceof ICompilationUnit cu) {
 				int start = getSourceStart(cu, problem);
 				if (start > -1) {
 					return JDTUtils.toRange(openable, start, problem.getSourceEnd() - start + 1);
@@ -251,8 +306,7 @@ public abstract class BaseDiagnosticsHandler implements IProblemRequestor {
 
 			start.setLine(problem.getSourceLineNumber() - 1);// The protocol is 0-based.
 			end.setLine(problem.getSourceLineNumber() - 1);
-			if (problem instanceof DefaultProblem) {
-				DefaultProblem dProblem = (DefaultProblem) problem;
+			if (problem instanceof DefaultProblem dProblem) {
 				start.setCharacter(dProblem.getSourceColumnNumber() - 1);
 				int offset = 0;
 				if (dProblem.getSourceStart() != -1 && dProblem.getSourceEnd() != -1) {

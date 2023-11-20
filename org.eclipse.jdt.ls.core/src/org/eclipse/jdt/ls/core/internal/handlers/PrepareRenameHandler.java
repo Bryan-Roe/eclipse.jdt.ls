@@ -17,6 +17,7 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.IJavaElement;
+import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.dom.ASTNode;
 import org.eclipse.jdt.core.dom.CompilationUnit;
 import org.eclipse.jdt.core.dom.IBinding;
@@ -28,18 +29,22 @@ import org.eclipse.jdt.ls.core.internal.JDTUtils;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringAvailabilityTester;
 import org.eclipse.jdt.ls.core.internal.corrections.InnovationContext;
-import org.eclipse.lsp4j.PrepareRenameResult;
+import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.lsp4j.Range;
 import org.eclipse.lsp4j.TextDocumentPositionParams;
 import org.eclipse.lsp4j.jsonrpc.ResponseErrorException;
-import org.eclipse.lsp4j.jsonrpc.messages.Either;
 import org.eclipse.lsp4j.jsonrpc.messages.ResponseError;
 import org.eclipse.lsp4j.jsonrpc.messages.ResponseErrorCode;
 
 public class PrepareRenameHandler {
 
-	public Either<Range, PrepareRenameResult> prepareRename(TextDocumentPositionParams params, IProgressMonitor monitor) {
+	private PreferenceManager preferenceManager;
 
+	public PrepareRenameHandler(PreferenceManager preferenceManager) {
+		this.preferenceManager = preferenceManager;
+	}
+
+	public Range prepareRename(TextDocumentPositionParams params, IProgressMonitor monitor) {
 		final ICompilationUnit unit = JDTUtils.resolveCompilationUnit(params.getTextDocument().getUri());
 		if (unit != null) {
 			try {
@@ -54,15 +59,25 @@ public class PrepareRenameHandler {
 						if (occurrences != null) {
 							for (OccurrenceLocation loc : occurrences) {
 								if (monitor.isCanceled()) {
-									return Either.forLeft(new Range());
+									return new Range();
 								}
 								if (loc.getOffset() <= offset && loc.getOffset() + loc.getLength() >= offset) {
+									// https://github.com/redhat-developer/vscode-java/issues/2805
+									IJavaElement[] elements = JDTUtils.findElementsAtSelection(unit, params.getPosition().getLine(), params.getPosition().getCharacter(), this.preferenceManager, monitor);
+									if (elements.length == 1) {
+										IJavaElement element = elements[0];
+										if (element instanceof IMethod method) {
+											if (JDTUtils.isGenerated(method)) {
+												throw new ResponseErrorException(new ResponseError(ResponseErrorCode.InvalidRequest, "Renaming this element is not supported.", null));
+											}
+										}
+									}
 									InnovationContext context = new InnovationContext(unit, loc.getOffset(), loc.getLength());
 									context.setASTRoot(ast);
 									ASTNode node = context.getCoveredNode();
 									// Rename package is not fully supported yet.
 									if (!isBinaryOrPackage(node)) {
-										return Either.forLeft(JDTUtils.toRange(unit, loc.getOffset(), loc.getLength()));
+										return JDTUtils.toRange(unit, loc.getOffset(), loc.getLength());
 									}
 								}
 							}
@@ -78,8 +93,8 @@ public class PrepareRenameHandler {
 	}
 
 	private boolean isBinaryOrPackage(ASTNode node) {
-		if (node instanceof Name) {
-			IBinding resolvedBinding = ((Name) node).resolveBinding();
+		if (node instanceof Name name) {
+			IBinding resolvedBinding = name.resolveBinding();
 			IJavaElement element = resolvedBinding != null ? resolvedBinding.getJavaElement() : null;
 			try {
 				if (element == null || element.getElementType() == IJavaElement.PACKAGE_FRAGMENT || !RefactoringAvailabilityTester.isRenameElementAvailable(element)) {

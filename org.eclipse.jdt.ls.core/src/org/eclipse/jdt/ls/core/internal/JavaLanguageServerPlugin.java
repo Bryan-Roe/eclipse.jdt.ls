@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016-2019 Red Hat Inc. and others.
+ * Copyright (c) 2016-2022 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -12,23 +12,15 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.internal;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.PrintStream;
 import java.net.Authenticator;
 import java.net.InetSocketAddress;
 import java.net.PasswordAuthentication;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.Channels;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,9 +30,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.eclipse.core.internal.net.ProxySelector;
 import org.eclipse.core.net.proxy.IProxyData;
 import org.eclipse.core.net.proxy.IProxyService;
-import org.eclipse.core.resources.IWorkspace;
-import org.eclipse.core.resources.IWorkspaceDescription;
-import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IStatus;
@@ -48,7 +37,6 @@ import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Plugin;
 import org.eclipse.core.runtime.Status;
 import org.eclipse.core.runtime.preferences.DefaultScope;
-import org.eclipse.core.runtime.preferences.IEclipsePreferences;
 import org.eclipse.jdt.core.WorkingCopyOwner;
 import org.eclipse.jdt.core.manipulation.JavaManipulation;
 import org.eclipse.jdt.internal.codeassist.impl.AssistOptions;
@@ -56,12 +44,12 @@ import org.eclipse.jdt.internal.core.JavaModelManager;
 import org.eclipse.jdt.internal.core.manipulation.JavaManipulationPlugin;
 import org.eclipse.jdt.internal.core.manipulation.MembersOrderPreferenceCacheCommon;
 import org.eclipse.jdt.internal.core.search.indexing.IndexManager;
-import org.eclipse.jdt.internal.corext.codemanipulation.CodeGenerationSettingsConstants;
-import org.eclipse.jdt.internal.corext.template.java.VarResolver;
+import org.eclipse.jdt.ls.core.contentassist.ICompletionContributionService;
 import org.eclipse.jdt.ls.core.internal.JavaClientConnection.JavaLanguageClient;
 import org.eclipse.jdt.ls.core.internal.contentassist.TypeFilter;
-import org.eclipse.jdt.ls.core.internal.corext.template.java.JavaContextType;
+import org.eclipse.jdt.ls.core.internal.corext.template.java.JavaContextTypeRegistry;
 import org.eclipse.jdt.ls.core.internal.corext.template.java.JavaLanguageServerTemplateStore;
+import org.eclipse.jdt.ls.core.internal.handlers.CompletionContributionService;
 import org.eclipse.jdt.ls.core.internal.handlers.JDTLanguageServer;
 import org.eclipse.jdt.ls.core.internal.managers.ContentProviderManager;
 import org.eclipse.jdt.ls.core.internal.managers.DigestStore;
@@ -69,11 +57,11 @@ import org.eclipse.jdt.ls.core.internal.managers.ISourceDownloader;
 import org.eclipse.jdt.ls.core.internal.managers.MavenSourceDownloader;
 import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager;
 import org.eclipse.jdt.ls.core.internal.managers.StandardProjectsManager;
+import org.eclipse.jdt.ls.core.internal.managers.TelemetryManager;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jdt.ls.core.internal.preferences.StandardPreferenceManager;
 import org.eclipse.jdt.ls.core.internal.syntaxserver.SyntaxLanguageServer;
 import org.eclipse.jdt.ls.core.internal.syntaxserver.SyntaxProjectsManager;
-import org.eclipse.jface.text.templates.TemplateVariableResolver;
 import org.eclipse.lsp4j.jsonrpc.Launcher;
 import org.eclipse.lsp4j.jsonrpc.MessageConsumer;
 import org.eclipse.text.templates.ContextTypeRegistry;
@@ -86,7 +74,7 @@ import com.google.common.base.Throwables;
 
 public class JavaLanguageServerPlugin extends Plugin {
 
-	private static final String JDT_UI_PLUGIN = "org.eclipse.jdt.ui";
+	public static final String JDT_UI_PLUGIN = "org.eclipse.jdt.ui";
 	public static final String MANUAL = "Manual";
 	public static final String DIRECT = "Direct";
 	public static final String NATIVE = "Native";
@@ -113,17 +101,15 @@ public class JavaLanguageServerPlugin extends Plugin {
 	public static final String PLUGIN_ID = IConstants.PLUGIN_ID;
 
 	public static final String DEFAULT_MEMBER_SORT_ORDER = "T,SF,SI,SM,F,I,C,M"; //$NON-NLS-1$
+	public static final String DEFAULT_VISIBILITY_SORT_ORDER = "B,R,D,V"; //$NON-NLS-1$
 
 	private static JavaLanguageServerPlugin pluginInstance;
 	private static BundleContext context;
 	private ServiceTracker<IProxyService, IProxyService> proxyServiceTracker = null;
-	private static InputStream in;
-	private static PrintStream out;
-	private static PrintStream err;
 
 	private ISourceDownloader sourceDownloader;
 
-	private LanguageServer languageServer;
+	private LanguageServerApplication languageServer;
 	private ProjectsManager projectsManager;
 	private DigestStore digestStore;
 	private ContentProviderManager contentProviderManager;
@@ -139,7 +125,10 @@ public class JavaLanguageServerPlugin extends Plugin {
 
 	private DiagnosticsState nonProjectDiagnosticsState;
 
-	public static LanguageServer getLanguageServer() {
+	private ExecutorService executorService;
+	private CompletionContributionService completionContributionService;
+
+	public static LanguageServerApplication getLanguageServer() {
 		return pluginInstance == null ? null : pluginInstance.languageServer;
 	}
 
@@ -154,21 +143,6 @@ public class JavaLanguageServerPlugin extends Plugin {
 	@Override
 	public void start(BundleContext bundleContext) throws Exception {
 		super.start(bundleContext);
-		try {
-			Platform.getBundle(ResourcesPlugin.PI_RESOURCES).start(Bundle.START_TRANSIENT);
-			IWorkspace workspace = ResourcesPlugin.getWorkspace();
-			IWorkspaceDescription description = workspace.getDescription();
-			description.setAutoBuilding(false);
-			workspace.setDescription(description);
-		} catch (BundleException e) {
-			logException(e.getMessage(), e);
-		}
-		boolean isDebug = Boolean.getBoolean("jdt.ls.debug");
-		try {
-			redirectStandardStreams(isDebug);
-		} catch (FileNotFoundException e) {
-			logException(e.getMessage(), e);
-		}
 		JavaLanguageServerPlugin.context = bundleContext;
 		JavaLanguageServerPlugin.pluginInstance = this;
 		setPreferenceNodeId();
@@ -181,9 +155,6 @@ public class JavaLanguageServerPlugin extends Plugin {
 			preferenceManager = new StandardPreferenceManager();
 			projectsManager = new StandardProjectsManager(preferenceManager);
 		}
-		IEclipsePreferences fDefaultPreferenceStore = DefaultScope.INSTANCE.getNode(JavaManipulation.getPreferenceNodeId());
-		fDefaultPreferenceStore.put(JavaManipulationPlugin.CODEASSIST_FAVORITE_STATIC_MEMBERS, "");
-
 		digestStore = new DigestStore(getStateLocation().toFile());
 		try {
 			ResourcesPlugin.getWorkspace().addSaveParticipant(IConstants.PLUGIN_ID, projectsManager);
@@ -229,10 +200,6 @@ public class JavaLanguageServerPlugin extends Plugin {
 		JavaManipulation.setPreferenceNodeId(null);
 		// Set the ID to use for preference lookups
 		JavaManipulation.setPreferenceNodeId(IConstants.PLUGIN_ID);
-
-		IEclipsePreferences fDefaultPreferenceStore = DefaultScope.INSTANCE.getNode(JavaManipulation.getPreferenceNodeId());
-		fDefaultPreferenceStore.put(MembersOrderPreferenceCacheCommon.APPEARANCE_MEMBER_SORT_ORDER, DEFAULT_MEMBER_SORT_ORDER);
-		fDefaultPreferenceStore.put(CodeGenerationSettingsConstants.CODEGEN_USE_OVERRIDE_ANNOTATION, Boolean.TRUE.toString());
 
 		// initialize MembersOrderPreferenceCacheCommon used by BodyDeclarationRewrite
 		MembersOrderPreferenceCacheCommon preferenceCache = JavaManipulationPlugin.getDefault().getMembersOrderPreferenceCacheCommon();
@@ -348,12 +315,15 @@ public class JavaLanguageServerPlugin extends Plugin {
 	}
 
 	private void startConnection() throws IOException {
+		TelemetryManager telemetryManager = new TelemetryManager();
+		boolean firstTimeInitialization = ProjectUtils.getAllProjects().length == 0;
+		telemetryManager.onLanguageServerStart(System.currentTimeMillis(), firstTimeInitialization);
 		Launcher<JavaLanguageClient> launcher;
-		ExecutorService executorService = Executors.newCachedThreadPool();
+		ExecutorService executorService = getExecutorService();
 		if (JDTEnvironmentUtils.isSyntaxServer()) {
 			protocol = new SyntaxLanguageServer(contentProviderManager, projectsManager, preferenceManager);
 		} else {
-			protocol = new JDTLanguageServer(projectsManager, preferenceManager);
+			protocol = new JDTLanguageServer(projectsManager, preferenceManager, telemetryManager);
 		}
 		if (JDTEnvironmentUtils.inSocketStreamDebugMode()) {
 			String host = JDTEnvironmentUtils.getClientHost();
@@ -370,7 +340,7 @@ public class JavaLanguageServerPlugin extends Plugin {
 				throw new RuntimeException("Error when opening a socket channel at " + host + ":" + port + ".", e);
 			}
 		} else {
-			ConnectionStreamFactory connectionFactory = new ConnectionStreamFactory();
+			ConnectionStreamFactory connectionFactory = new ConnectionStreamFactory(languageServer);
 			InputStream in = connectionFactory.getInputStream();
 			OutputStream out = connectionFactory.getOutputStream();
 			Function<MessageConsumer, MessageConsumer> wrapper;
@@ -434,6 +404,15 @@ public class JavaLanguageServerPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * log ths message as {@link IStatus#INFO} if the debug trace if enabled
+	 */
+	public static void debugTrace(String message) {
+		if (context != null && Boolean.getBoolean("jdt.ls.debug")) {
+			log(new Status(IStatus.INFO, context.getBundle().getSymbolicName(), message));
+		}
+	}
+
 	public static void logException(Throwable ex) {
 		if (context != null) {
 			String message = ex.getMessage();
@@ -456,7 +435,7 @@ public class JavaLanguageServerPlugin extends Plugin {
 		}
 	}
 
-	static void startLanguageServer(LanguageServer newLanguageServer) throws IOException {
+	static void startLanguageServer(LanguageServerApplication newLanguageServer) throws IOException {
 		if (pluginInstance != null) {
 			pluginInstance.languageServer = newLanguageServer;
 			pluginInstance.startConnection();
@@ -486,41 +465,6 @@ public class JavaLanguageServerPlugin extends Plugin {
 	 */
 	public static String getVersion() {
 		return context == null ? "Unknown" : context.getBundle().getVersion().toString();
-	}
-
-	private static void redirectStandardStreams(boolean isDebug) throws FileNotFoundException {
-		in = System.in;
-		out = System.out;
-		err = System.err;
-		System.setIn(new ByteArrayInputStream(new byte[0]));
-		if (isDebug) {
-			String id = "jdt.ls-" + new SimpleDateFormat("yyyyMMddHHmmss").format(new Date());
-			IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-			File workspaceFile = root.getRawLocation().makeAbsolute().toFile();
-			File rootFile = new File(workspaceFile, ".metadata");
-			rootFile.mkdirs();
-			File outFile = new File(rootFile, ".out-" + id + ".log");
-			FileOutputStream stdFileOut = new FileOutputStream(outFile);
-			System.setOut(new PrintStream(stdFileOut));
-			File errFile = new File(rootFile, ".error-" + id + ".log");
-			FileOutputStream stdFileErr = new FileOutputStream(errFile);
-			System.setErr(new PrintStream(stdFileErr));
-		} else {
-			System.setOut(new PrintStream(new ByteArrayOutputStream()));
-			System.setErr(new PrintStream(new ByteArrayOutputStream()));
-		}
-	}
-
-	public static InputStream getIn() {
-		return in;
-	}
-
-	public static PrintStream getOut() {
-		return out;
-	}
-
-	public static PrintStream getErr() {
-		return err;
 	}
 
 	public static PreferenceManager getPreferencesManager() {
@@ -568,21 +512,7 @@ public class JavaLanguageServerPlugin extends Plugin {
 	 */
 	public synchronized ContextTypeRegistry getTemplateContextRegistry() {
 		if (fContextTypeRegistry == null) {
-			ContextTypeRegistry registry = new ContextTypeRegistry();
-
-			JavaContextType statementContextType = new JavaContextType();
-			statementContextType.setId(JavaContextType.ID_STATEMENTS);
-			statementContextType.setName(JavaContextType.ID_STATEMENTS);
-			statementContextType.initializeContextTypeResolvers();
-			// Todo: Some of the resolvers is defined in the XML of the jdt.ui, now we have to add them manually.
-			// See: https://github.com/eclipse/eclipse.jdt.ui/blob/cf6c42522ee5a5ea21a34fcfdecf3504d4750a04/org.eclipse.jdt.ui/plugin.xml#L5619-L5625
-			TemplateVariableResolver resolver = new VarResolver();
-			resolver.setType("var");
-			statementContextType.addResolver(resolver);
-
-			registry.addContextType(statementContextType);
-
-			fContextTypeRegistry = registry;
+			fContextTypeRegistry = new JavaContextTypeRegistry();
 		}
 		return fContextTypeRegistry;
 	}
@@ -624,5 +554,19 @@ public class JavaLanguageServerPlugin extends Plugin {
 			pluginInstance.sourceDownloader = new MavenSourceDownloader();
 		}
 		return pluginInstance.sourceDownloader;
+	}
+
+	public synchronized static ExecutorService getExecutorService() {
+		if (pluginInstance.executorService == null || pluginInstance.executorService.isShutdown()) {
+			pluginInstance.executorService = Executors.newCachedThreadPool();
+		}
+		return pluginInstance.executorService;
+	}
+
+	public synchronized static ICompletionContributionService getCompletionContributionService() {
+		if (pluginInstance.completionContributionService == null) {
+			pluginInstance.completionContributionService = new CompletionContributionService();
+		}
+		return pluginInstance.completionContributionService;
 	}
 }

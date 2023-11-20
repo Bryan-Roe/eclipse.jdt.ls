@@ -29,6 +29,10 @@ import org.eclipse.lsp4j.jsonrpc.CancelChecker;
 import org.eclipse.lsp4j.jsonrpc.CompletableFutures;
 
 public class BaseJDTLanguageServer {
+	/**
+	 * Exit code returned when JDTLanguageServer is forced to exit.
+	 */
+	public static final int FORCED_EXIT_CODE = 1;
 	protected JavaClientConnection client;
 	protected boolean shutdownReceived = false;
 	private Set<String> registeredCapabilities = new HashSet<>(3);
@@ -68,6 +72,14 @@ public class BaseJDTLanguageServer {
 			Registration registration = new Registration(id, method, options);
 			RegistrationParams registrationParams = new RegistrationParams(Collections.singletonList(registration));
 			client.registerCapability(registrationParams);
+		}
+	}
+
+	protected void toggleCapability(boolean enabled, String id, String capability, Object options) {
+		if (enabled) {
+			registerCapability(id, capability, options);
+		} else {
+			unregisterCapability(id, capability);
 		}
 	}
 

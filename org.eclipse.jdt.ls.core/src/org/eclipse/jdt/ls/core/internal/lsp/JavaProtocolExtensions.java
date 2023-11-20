@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016-2019 Red Hat Inc. and others.
+ * Copyright (c) 2016-2022 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -17,6 +17,7 @@ import java.util.concurrent.CompletableFuture;
 
 import org.eclipse.jdt.ls.core.internal.BuildWorkspaceStatus;
 import org.eclipse.jdt.ls.core.internal.codemanipulation.GenerateGetterSetterOperation.AccessorField;
+import org.eclipse.jdt.ls.core.internal.handlers.ExtractInterfaceHandler.CheckExtractInterfaceResponse;
 import org.eclipse.jdt.ls.core.internal.handlers.FindLinksHandler.FindLinksParams;
 import org.eclipse.jdt.ls.core.internal.handlers.GenerateAccessorsHandler.GenerateAccessorsParams;
 import org.eclipse.jdt.ls.core.internal.handlers.GenerateAccessorsHandler.AccessorCodeActionParams;
@@ -42,6 +43,8 @@ import org.eclipse.lsp4j.Location;
 import org.eclipse.lsp4j.SymbolInformation;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
 import org.eclipse.lsp4j.WorkspaceEdit;
+import org.eclipse.lsp4j.extended.ProjectConfigurationsUpdateParam;
+import org.eclipse.lsp4j.extended.ProjectBuildParams;
 import org.eclipse.lsp4j.jsonrpc.messages.Either;
 import org.eclipse.lsp4j.jsonrpc.services.JsonNotification;
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest;
@@ -61,13 +64,25 @@ public interface JavaProtocolExtensions {
 
 	/**
 	 * Request a project configuration update
+	 *
+	 * @deprecated Please use {@link #projectConfigurationsUpdate(TextDocumentIdentifier)}.
 	 * @param documentUri the document from which the project configuration will be updated
 	 */
 	@JsonNotification
 	void projectConfigurationUpdate(TextDocumentIdentifier documentUri);
 
+	/**
+	 * Request multiple project configurations update
+	 * @param documentUris the documents from which the project configuration will be updated
+	 */
+	@JsonNotification
+	void projectConfigurationsUpdate(ProjectConfigurationsUpdateParam params);
+
 	@JsonRequest
 	CompletableFuture<BuildWorkspaceStatus> buildWorkspace(Either<Boolean, boolean[]> forceReBuild);
+
+	@JsonRequest
+	CompletableFuture<BuildWorkspaceStatus> buildProjects(ProjectBuildParams params);
 
 	@JsonRequest
 	CompletableFuture<OverridableMethodsResponse> listOverridableMethods(CodeActionParams params);
@@ -125,4 +140,10 @@ public interface JavaProtocolExtensions {
 
 	@JsonRequest
 	CompletableFuture<List<? extends Location>> findLinks(FindLinksParams params);
+
+	@JsonRequest
+	CompletableFuture<CheckExtractInterfaceResponse> checkExtractInterfaceStatus(CodeActionParams params);
+
+	@JsonNotification
+	void validateDocument(ValidateDocumentParams params);
 }

@@ -19,6 +19,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collection;
@@ -44,10 +46,9 @@ import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.URIUtil;
 import org.eclipse.jdt.core.IJavaModelMarker;
+import org.eclipse.jdt.core.compiler.IProblem;
 
-import com.google.common.base.Charsets;
 import com.google.common.io.CharStreams;
-import com.google.common.io.Files;
 
 /**
  * @author Fred Bricon
@@ -121,7 +122,7 @@ public final class ResourceUtils {
 		}
 		String content;
 		try {
-			content = Files.toString(toFile(fileURI), Charsets.UTF_8);
+			content = Files.readString(toFile(fileURI).toPath());
 		} catch (IOException e) {
 			throw new CoreException(StatusFactory.newErrorStatus("Can not get " + fileURI + " content", e));
 		}
@@ -137,7 +138,7 @@ public final class ResourceUtils {
 			content = "";
 		}
 		try {
-			Files.write(content, toFile(fileURI), Charsets.UTF_8);
+			Files.writeString(toFile(fileURI).toPath(), content);
 		} catch (IOException e) {
 			throw new CoreException(StatusFactory.newErrorStatus("Can not write to " + fileURI, e));
 		}
@@ -221,6 +222,11 @@ public final class ResourceUtils {
 	public static IPath canonicalFilePathFromURI(String uriStr) {
 		URI uri = URI.create(uriStr);
 		if ("file".equals(uri.getScheme())) {
+			try {
+				uri = new URI(uri.getScheme(), null, uri.getPath(), null, null);
+			} catch (URISyntaxException e) {
+				JavaLanguageServerPlugin.logException(e.getMessage(), e);
+			}
 			return FileUtil.canonicalPath(Path.fromOSString(Paths.get(uri).toString()));
 		}
 		return null;
@@ -382,5 +388,10 @@ public final class ResourceUtils {
 		marker.setAttribute(IMarker.MESSAGE, message);
 		marker.setAttribute(IMarker.SEVERITY, IMarker.SEVERITY_WARNING);
 		return marker;
+	}
+
+	public static boolean isUnresolvedImportError(IMarker marker) {
+		return marker.getAttribute(IMarker.SEVERITY, 0) == IMarker.SEVERITY_ERROR
+			&& marker.getAttribute(IJavaModelMarker.ID, 0) == IProblem.ImportNotFound;
 	}
 }

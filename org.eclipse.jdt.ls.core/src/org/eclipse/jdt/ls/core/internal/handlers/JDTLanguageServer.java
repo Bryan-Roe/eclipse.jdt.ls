@@ -12,6 +12,7 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.internal.handlers;
 
+import static org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin.debugTrace;
 import static org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin.logException;
 import static org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin.logInfo;
 
@@ -31,13 +32,16 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.core.runtime.Status;
 import org.eclipse.core.runtime.jobs.Job;
+import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.core.WorkingCopyOwner;
 import org.eclipse.jdt.launching.JavaRuntime;
 import org.eclipse.jdt.ls.core.internal.BaseJDTLanguageServer;
 import org.eclipse.jdt.ls.core.internal.BuildWorkspaceStatus;
+import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
 import org.eclipse.jdt.ls.core.internal.JDTUtils;
 import org.eclipse.jdt.ls.core.internal.JSONUtility;
 import org.eclipse.jdt.ls.core.internal.JVMConfigurator;
@@ -45,12 +49,15 @@ import org.eclipse.jdt.ls.core.internal.JavaClientConnection;
 import org.eclipse.jdt.ls.core.internal.JavaClientConnection.JavaLanguageClient;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.JobHelpers;
+import org.eclipse.jdt.ls.core.internal.LanguageServerApplication;
 import org.eclipse.jdt.ls.core.internal.LanguageServerWorkingCopyOwner;
 import org.eclipse.jdt.ls.core.internal.ServiceStatus;
 import org.eclipse.jdt.ls.core.internal.codemanipulation.GenerateGetterSetterOperation.AccessorField;
+import org.eclipse.jdt.ls.core.internal.handlers.CodeActionHandler.CodeActionData;
+import org.eclipse.jdt.ls.core.internal.handlers.ExtractInterfaceHandler.CheckExtractInterfaceResponse;
 import org.eclipse.jdt.ls.core.internal.handlers.FindLinksHandler.FindLinksParams;
-import org.eclipse.jdt.ls.core.internal.handlers.GenerateAccessorsHandler.GenerateAccessorsParams;
 import org.eclipse.jdt.ls.core.internal.handlers.GenerateAccessorsHandler.AccessorCodeActionParams;
+import org.eclipse.jdt.ls.core.internal.handlers.GenerateAccessorsHandler.GenerateAccessorsParams;
 import org.eclipse.jdt.ls.core.internal.handlers.GenerateConstructorsHandler.CheckConstructorsResponse;
 import org.eclipse.jdt.ls.core.internal.handlers.GenerateConstructorsHandler.GenerateConstructorsParams;
 import org.eclipse.jdt.ls.core.internal.handlers.GenerateDelegateMethodsHandler.CheckDelegateMethodsResponse;
@@ -69,8 +76,10 @@ import org.eclipse.jdt.ls.core.internal.handlers.OverrideMethodsHandler.AddOverr
 import org.eclipse.jdt.ls.core.internal.handlers.OverrideMethodsHandler.OverridableMethodsResponse;
 import org.eclipse.jdt.ls.core.internal.handlers.WorkspaceSymbolHandler.SearchSymbolParams;
 import org.eclipse.jdt.ls.core.internal.lsp.JavaProtocolExtensions;
+import org.eclipse.jdt.ls.core.internal.lsp.ValidateDocumentParams;
 import org.eclipse.jdt.ls.core.internal.managers.ContentProviderManager;
 import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager;
+import org.eclipse.jdt.ls.core.internal.managers.TelemetryManager;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jdt.ls.core.internal.preferences.Preferences;
 import org.eclipse.lsp4j.CallHierarchyIncomingCall;
@@ -90,6 +99,7 @@ import org.eclipse.lsp4j.Command;
 import org.eclipse.lsp4j.CompletionItem;
 import org.eclipse.lsp4j.CompletionList;
 import org.eclipse.lsp4j.CompletionParams;
+import org.eclipse.lsp4j.DeclarationParams;
 import org.eclipse.lsp4j.DefinitionParams;
 import org.eclipse.lsp4j.DidChangeConfigurationParams;
 import org.eclipse.lsp4j.DidChangeTextDocumentParams;
@@ -116,8 +126,11 @@ import org.eclipse.lsp4j.ImplementationParams;
 import org.eclipse.lsp4j.InitializeParams;
 import org.eclipse.lsp4j.InitializeResult;
 import org.eclipse.lsp4j.InitializedParams;
+import org.eclipse.lsp4j.InlayHint;
+import org.eclipse.lsp4j.InlayHintParams;
 import org.eclipse.lsp4j.Location;
 import org.eclipse.lsp4j.LocationLink;
+import org.eclipse.lsp4j.PrepareRenameDefaultBehavior;
 import org.eclipse.lsp4j.PrepareRenameParams;
 import org.eclipse.lsp4j.PrepareRenameResult;
 import org.eclipse.lsp4j.Range;
@@ -128,22 +141,29 @@ import org.eclipse.lsp4j.SelectionRange;
 import org.eclipse.lsp4j.SelectionRangeParams;
 import org.eclipse.lsp4j.SemanticTokens;
 import org.eclipse.lsp4j.SemanticTokensParams;
+import org.eclipse.lsp4j.SetTraceParams;
 import org.eclipse.lsp4j.SignatureHelp;
 import org.eclipse.lsp4j.SignatureHelpParams;
 import org.eclipse.lsp4j.SymbolInformation;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
 import org.eclipse.lsp4j.TextEdit;
 import org.eclipse.lsp4j.TypeDefinitionParams;
+import org.eclipse.lsp4j.TypeHierarchyItem;
+import org.eclipse.lsp4j.TypeHierarchyPrepareParams;
+import org.eclipse.lsp4j.TypeHierarchySubtypesParams;
+import org.eclipse.lsp4j.TypeHierarchySupertypesParams;
 import org.eclipse.lsp4j.WillSaveTextDocumentParams;
 import org.eclipse.lsp4j.WorkspaceEdit;
+import org.eclipse.lsp4j.WorkspaceSymbol;
 import org.eclipse.lsp4j.WorkspaceSymbolParams;
+import org.eclipse.lsp4j.extended.ProjectBuildParams;
+import org.eclipse.lsp4j.extended.ProjectConfigurationsUpdateParam;
 import org.eclipse.lsp4j.jsonrpc.CompletableFutures;
 import org.eclipse.lsp4j.jsonrpc.messages.Either;
+import org.eclipse.lsp4j.jsonrpc.messages.Either3;
 import org.eclipse.lsp4j.jsonrpc.services.JsonDelegate;
-import org.eclipse.lsp4j.proposed.InlayHint;
-import org.eclipse.lsp4j.proposed.InlayHintParams;
-import org.eclipse.lsp4j.proposed.InlayHintProvider;
 import org.eclipse.lsp4j.services.LanguageServer;
+import org.eclipse.lsp4j.services.NotebookDocumentService;
 import org.eclipse.lsp4j.services.TextDocumentService;
 import org.eclipse.lsp4j.services.WorkspaceService;
 
@@ -152,28 +172,28 @@ import org.eclipse.lsp4j.services.WorkspaceService;
  *
  */
 public class JDTLanguageServer extends BaseJDTLanguageServer implements LanguageServer, TextDocumentService, WorkspaceService,
-		JavaProtocolExtensions, InlayHintProvider {
+		JavaProtocolExtensions {
 
 	public static final String JAVA_LSP_JOIN_ON_COMPLETION = "java.lsp.joinOnCompletion";
 	public static final String JAVA_LSP_INITIALIZE_WORKSPACE = "java.lsp.initializeWorkspace";
-	/**
-	 * Exit code returned when JDTLanguageServer is forced to exit.
-	 */
-	private static final int FORCED_EXIT_CODE = 1;
 	private ProjectsManager pm;
 	private LanguageServerWorkingCopyOwner workingCopyOwner;
 	private PreferenceManager preferenceManager;
 	private DocumentLifeCycleHandler documentLifeCycleHandler;
+	private WorkspaceEventsHandler workspaceEventHandler;
 	private WorkspaceDiagnosticsHandler workspaceDiagnosticsHandler;
 	private ClasspathUpdateHandler classpathUpdateHandler;
 	private JVMConfigurator jvmConfigurator;
 	private WorkspaceExecuteCommandHandler commandHandler;
+	private TypeHierarchyHandler typeHierarchyHandler = new TypeHierarchyHandler();
 
 	private ProgressReporterManager progressReporterManager;
 	/**
 	 * The status of the language service
 	 */
 	private ServiceStatus status;
+	private TelemetryManager telemetryManager;
+	private Object codeActionLock = new Object();
 
 	private Job shutdownJob = new Job("Shutdown...") {
 
@@ -207,23 +227,35 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 		this(projects, preferenceManager, WorkspaceExecuteCommandHandler.getInstance());
 	}
 
+	public JDTLanguageServer(ProjectsManager projects, PreferenceManager preferenceManager, TelemetryManager telemetryManager) {
+		this(projects, preferenceManager, WorkspaceExecuteCommandHandler.getInstance(), telemetryManager);
+	}
+
 	public JDTLanguageServer(ProjectsManager projects, PreferenceManager preferenceManager, WorkspaceExecuteCommandHandler commandHandler) {
+		this(projects, preferenceManager, commandHandler, new TelemetryManager());
+	}
+
+	public JDTLanguageServer(ProjectsManager projects, PreferenceManager preferenceManager, WorkspaceExecuteCommandHandler commandHandler, TelemetryManager telemetryManager) {
 		this.pm = projects;
 		this.preferenceManager = preferenceManager;
 		this.jvmConfigurator = new JVMConfigurator();
 		JavaRuntime.addVMInstallChangedListener(jvmConfigurator);
 		this.commandHandler = commandHandler;
+		this.telemetryManager = telemetryManager;
 	}
 
 	@Override
 	public void connectClient(JavaLanguageClient client) {
 		super.connectClient(client);
 		progressReporterManager = new ProgressReporterManager(client, preferenceManager);
-		Job.getJobManager().setProgressProvider(progressReporterManager);
 		this.workingCopyOwner = new LanguageServerWorkingCopyOwner(this.client);
 		pm.setConnection(client);
 		WorkingCopyOwner.setPrimaryBufferProvider(this.workingCopyOwner);
 		this.documentLifeCycleHandler = new DocumentLifeCycleHandler(this.client, preferenceManager, pm, true);
+		this.workspaceEventHandler = new WorkspaceEventsHandler(pm, this.client, this.documentLifeCycleHandler);
+		this.telemetryManager.setLanguageClient(client);
+		this.telemetryManager.setPreferenceManager(preferenceManager);
+		this.telemetryManager.setProjectseManager(pm);
 	}
 
 	// For testing purpose
@@ -237,6 +269,10 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 		this.client.disconnect();
 	}
 
+	public ProgressReporterManager getProgressReporterManager() {
+		return this.progressReporterManager;
+	}
+
 	/* (non-Javadoc)
 	 * @see org.eclipse.lsp4j.services.LanguageServer#initialize(org.eclipse.lsp4j.InitializeParams)
 	 */
@@ -244,7 +280,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	public CompletableFuture<InitializeResult> initialize(InitializeParams params) {
 		logInfo(">> initialize");
 		status = ServiceStatus.Starting;
-		InitHandler handler = new InitHandler(pm, preferenceManager, client, commandHandler);
+		InitHandler handler = new InitHandler(pm, preferenceManager, client, commandHandler, telemetryManager);
 		return CompletableFuture.completedFuture(handler.initialize(params));
 	}
 
@@ -267,23 +303,33 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 			@Override
 			public IStatus run(IProgressMonitor monitor) {
 				try {
-					JobHelpers.waitForBuildJobs(60 * 60 * 1000); // 1 hour
-					logInfo(">> build jobs finished");
 					workspaceDiagnosticsHandler = new WorkspaceDiagnosticsHandler(JDTLanguageServer.this.client, pm, preferenceManager.getClientPreferences(), documentLifeCycleHandler);
-					workspaceDiagnosticsHandler.publishDiagnostics(monitor);
 					workspaceDiagnosticsHandler.addResourceChangeListener();
 					classpathUpdateHandler = new ClasspathUpdateHandler(JDTLanguageServer.this.client);
 					classpathUpdateHandler.addElementChangeListener();
+					SourceAttachUpdateHandler attachListener = new SourceAttachUpdateHandler(client);
+					attachListener.addElementChangeListener();
 					pm.registerWatchers();
-					logInfo(">> watchers registered");
+					debugTrace(">> watchers registered");
 
 					registerCapabilities();
 					// we do not have the user setting initialized yet at this point but we should
 					// still call to enable defaults in case client does not support configuration changes
 					syncCapabilitiesToSettings();
 
+					// before send the service ready notification, make sure all bundles are synchronized
+					synchronizeBundles();
+
 					client.sendStatus(ServiceStatus.ServiceReady, "ServiceReady");
 					status = ServiceStatus.ServiceReady;
+					telemetryManager.onServiceReady(System.currentTimeMillis());
+					pm.projectsImported(monitor);
+
+					IndexUtils.copyIndexesToSharedLocation();
+					JobHelpers.waitForBuildJobs(60 * 60 * 1000); // 1 hour
+					logInfo(">> build jobs finished");
+					telemetryManager.onBuildFinished(System.currentTimeMillis());
+					workspaceDiagnosticsHandler.publishDiagnostics(monitor);
 				} catch (OperationCanceledException | CoreException e) {
 					logException(e.getMessage(), e);
 					return Status.CANCEL_STATUS;
@@ -315,6 +361,9 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 		if (preferenceManager.getClientPreferences().isDefinitionDynamicRegistered()) {
 			registerCapability(Preferences.DEFINITION_ID, Preferences.DEFINITION);
 		}
+		if (preferenceManager.getClientPreferences().isDeclarationDynamicRegistered()) {
+			registerCapability(Preferences.DECLARATION_ID, Preferences.DECLARATION);
+		}
 		if (preferenceManager.getClientPreferences().isTypeDefinitionDynamicRegistered()) {
 			registerCapability(Preferences.TYPEDEFINITION_ID, Preferences.TYPEDEFINITION);
 		}
@@ -333,6 +382,9 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 		if (preferenceManager.getClientPreferences().isImplementationDynamicRegistered()) {
 			registerCapability(Preferences.IMPLEMENTATION_ID, Preferences.IMPLEMENTATION);
 		}
+		if (preferenceManager.getClientPreferences().isInlayHintDynamicRegistered()) {
+			registerCapability(Preferences.INLAY_HINT_ID, Preferences.INLAY_HINT);
+		}
 	}
 
 	/**
@@ -340,7 +392,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	private void syncCapabilitiesToSettings() {
 		if (preferenceManager.getClientPreferences().isCompletionDynamicRegistered()) {
-			toggleCapability(preferenceManager.getPreferences().isCompletionEnabled(), Preferences.COMPLETION_ID, Preferences.COMPLETION, CompletionHandler.DEFAULT_COMPLETION_OPTIONS);
+			toggleCapability(preferenceManager.getPreferences().isCompletionEnabled(), Preferences.COMPLETION_ID, Preferences.COMPLETION, CompletionHandler.getDefaultCompletionOptions(preferenceManager));
 		}
 		if (preferenceManager.getClientPreferences().isFormattingDynamicRegistrationSupported()) {
 			toggleCapability(preferenceManager.getPreferences().isJavaFormatEnabled(), Preferences.FORMATTING_ID, Preferences.TEXT_DOCUMENT_FORMATTING, null);
@@ -376,6 +428,32 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 		}
 	}
 
+	/**
+	 * Ask client to check if any bundles need to be synchronized.
+	 */
+	private void synchronizeBundles() {
+		if (preferenceManager.getClientPreferences().isExecuteClientCommandSupport()) {
+			try {
+				Object commandResult = JavaLanguageServerPlugin.getInstance()
+					.getClientConnection().executeClientCommand("_java.reloadBundles.command");
+				if (commandResult instanceof List<?> list) {
+					List<String> bundlesToRefresh = (List<String>) commandResult;
+					if (bundlesToRefresh.size() > 0) {
+						BundleUtils.loadBundles(bundlesToRefresh);
+					}
+				} else if (commandResult instanceof Map<?, ?> m) {
+					String message = (String) m.get("message");
+					JavaLanguageServerPlugin.logError(message);
+				} else {
+					JavaLanguageServerPlugin.logError(
+						"Unexpected result from executeClientCommand: " + commandResult);
+				}
+			} catch (Exception e) {
+				JavaLanguageServerPlugin.logException(e);
+			}
+		}
+	}
+
 	private CodeActionOptions getCodeActionOptions() {
 		String[] kinds = { CodeActionKind.QuickFix, CodeActionKind.Refactor, CodeActionKind.RefactorExtract, CodeActionKind.RefactorInline, CodeActionKind.RefactorRewrite, CodeActionKind.Source, CodeActionKind.SourceOrganizeImports };
 		List<String> codeActionKinds = new ArrayList<>();
@@ -396,6 +474,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	public CompletableFuture<Object> shutdown() {
 		logInfo(">> shutdown");
 		return computeAsync((monitor) -> {
+			shutdownJob.setSystem(true);
 			shutdownJob.schedule();
 			shutdownReceived = true;
 			if (preferenceManager.getClientPreferences().shouldLanguageServerExitOnShutdown()) {
@@ -411,7 +490,15 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	@Override
 	public void exit() {
 		logInfo(">> exit");
+		LanguageServerApplication application = JavaLanguageServerPlugin.getLanguageServer();
+		if (application != null && application.getParentProcessId() != ProcessHandle.current().pid()) {
+			Executors.newSingleThreadScheduledExecutor().schedule(() -> {
+				logInfo("Forcing exit after 1 min.");
+				System.exit(FORCED_EXIT_CODE);
+			}, 1, TimeUnit.MINUTES);
+		}
 		if (!shutdownReceived) {
+			shutdownJob.setSystem(true);
 			shutdownJob.schedule();
 		}
 		try {
@@ -420,10 +507,6 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 			JavaLanguageServerPlugin.logException(e.getMessage(), e);
 		}
 		JavaLanguageServerPlugin.getLanguageServer().exit();
-		Executors.newSingleThreadScheduledExecutor().schedule(() -> {
-			logInfo("Forcing exit after 1 min.");
-			System.exit(FORCED_EXIT_CODE);
-		}, 1, TimeUnit.MINUTES);
 	}
 
 	/* (non-Javadoc)
@@ -451,10 +534,10 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 * @see org.eclipse.lsp4j.services.WorkspaceService#symbol(org.eclipse.lsp4j.WorkspaceSymbolParams)
 	 */
 	@Override
-	public CompletableFuture<List<? extends SymbolInformation>> symbol(WorkspaceSymbolParams params) {
-		logInfo(">> workspace/symbol");
+	public CompletableFuture<Either<List<? extends SymbolInformation>, List<? extends WorkspaceSymbol>>> symbol(WorkspaceSymbolParams params) {
+		debugTrace(">> workspace/symbol");
 		return computeAsync((monitor) -> {
-			return WorkspaceSymbolHandler.search(params.getQuery(), monitor);
+			return Either.forLeft(WorkspaceSymbolHandler.search(params.getQuery(), monitor));
 		});
 	}
 
@@ -463,14 +546,22 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public void didChangeConfiguration(DidChangeConfigurationParams params) {
-		logInfo(">> workspace/didChangeConfiguration");
+		debugTrace(">> workspace/didChangeConfiguration");
 		Object settings = JSONUtility.toModel(params.getSettings(), Map.class);
+		boolean nullAnalysisOptionsUpdated = false;
 		if (settings instanceof Map) {
 			Collection<IPath> rootPaths = preferenceManager.getPreferences().getRootPaths();
 			@SuppressWarnings("unchecked")
 			Preferences prefs = Preferences.createFrom((Map<String, Object>) settings);
 			prefs.setRootPaths(rootPaths);
+			boolean nullAnalysisConfigurationsChanged =!prefs.getNullableTypes().equals(preferenceManager.getPreferences().getNullableTypes())
+				|| !prefs.getNonnullTypes().equals(preferenceManager.getPreferences().getNonnullTypes())
+				|| !prefs.getNullAnalysisMode().equals(preferenceManager.getPreferences().getNullAnalysisMode());
 			preferenceManager.update(prefs);
+			if (nullAnalysisConfigurationsChanged) {
+				// trigger rebuild all the projects when the null analysis configuration changed **and** the compiler options updated
+				nullAnalysisOptionsUpdated = this.preferenceManager.getPreferences().updateAnnotationNullAnalysisOptions();
+			}
 		}
 		if (status == ServiceStatus.ServiceReady) {
 			// If we toggle on the capabilities too early before the tasks in initialized handler finished,
@@ -484,36 +575,29 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 			JavaLanguageServerPlugin.logException(e.getMessage(), e);
 		}
 		try {
-			boolean autoBuildChanged = ProjectsManager.setAutoBuilding(preferenceManager.getPreferences().isAutobuildEnabled());
-			if (jvmChanged) {
+			boolean isAutobuildEnabled = preferenceManager.getPreferences().isAutobuildEnabled();
+			boolean autoBuildChanged = ProjectsManager.setAutoBuilding(isAutobuildEnabled);
+			if (jvmChanged || nullAnalysisOptionsUpdated && isAutobuildEnabled) {
 				buildWorkspace(Either.forLeft(true));
-			} else if (autoBuildChanged) {
+			} else if (autoBuildChanged && isAutobuildEnabled) {
 				buildWorkspace(Either.forLeft(false));
+			} else if (nullAnalysisOptionsUpdated && !isAutobuildEnabled) {
+				documentLifeCycleHandler.publishDiagnostics(new NullProgressMonitor());
 			}
 		} catch (CoreException e) {
 			JavaLanguageServerPlugin.logException(e.getMessage(), e);
 		}
-		logInfo(">> New configuration: " + settings);
+		debugTrace(">> New configuration: " + settings);
 	}
 
-
-
-	private void toggleCapability(boolean enabled, String id, String capability, Object options) {
-		if (enabled) {
-			registerCapability(id, capability, options);
-		} else {
-			unregisterCapability(id, capability);
-		}
-	}
 
 	/* (non-Javadoc)
 	 * @see org.eclipse.lsp4j.services.WorkspaceService#didChangeWatchedFiles(org.eclipse.lsp4j.DidChangeWatchedFilesParams)
 	 */
 	@Override
 	public void didChangeWatchedFiles(DidChangeWatchedFilesParams params) {
-		logInfo(">> workspace/didChangeWatchedFiles ");
-		WorkspaceEventsHandler handler = new WorkspaceEventsHandler(pm, client, this.documentLifeCycleHandler);
-		handler.didChangeWatchedFiles(params);
+		debugTrace(">> workspace/didChangeWatchedFiles ");
+		this.workspaceEventHandler.didChangeWatchedFiles(params);
 	}
 
 	/* (non-Javadoc)
@@ -521,10 +605,17 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<Object> executeCommand(ExecuteCommandParams params) {
-		logInfo(">> workspace/executeCommand " + (params == null ? null : params.getCommand()));
-		return computeAsync((monitor) -> {
-			return commandHandler.executeCommand(params, monitor);
-		});
+		debugTrace(">> workspace/executeCommand " + (params == null ? null : params.getCommand()));
+		// see https://github.com/eclipse-jdtls/eclipse.jdt.ls/issues/2799
+		// Handle the paste event synchronously in the main thread
+		if (IDelegateCommandHandler.JAVA_EDIT_HANDLE_PASTE_EVENT.equals(params.getCommand()) || IDelegateCommandHandler.JAVA_EDIT_SMART_SEMICOLON_DETECTION.equals(params.getCommand())) {
+			Object result = commandHandler.executeCommand(params, new NullProgressMonitor());
+			return CompletableFuture.completedFuture(result);
+		} else {
+			return computeAsync((monitor) -> {
+				return commandHandler.executeCommand(params, monitor);
+			});
+		}
 	}
 
 	/* (non-Javadoc)
@@ -532,21 +623,18 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<Either<List<CompletionItem>, CompletionList>> completion(CompletionParams position) {
-		logInfo(">> document/completion");
-		CompletionHandler handler = new CompletionHandler(preferenceManager);
-		final IProgressMonitor[] monitors = new IProgressMonitor[1];
-		CompletableFuture<Either<List<CompletionItem>, CompletionList>> result = computeAsync((monitor) -> {
-			monitors[0] = monitor;
+		debugTrace(">> document/completion");
+		try {
+			CompletionHandler handler = new CompletionHandler(preferenceManager);
+			IProgressMonitor monitor = new NullProgressMonitor();
 			if (Boolean.getBoolean(JAVA_LSP_JOIN_ON_COMPLETION)) {
 				waitForLifecycleJobs(monitor);
 			}
-			return handler.completion(position, monitor);
-		});
-		result.join();
-		if (monitors[0].isCanceled()) {
-			result.cancel(true);
+			Either<List<CompletionItem>, CompletionList> result = handler.completion(position, monitor);
+			return CompletableFuture.completedFuture(result);
+		} catch (Exception ex) {
+			return CompletableFuture.failedFuture(ex);
 		}
-		return result;
 	}
 
 	/* (non-Javadoc)
@@ -554,21 +642,18 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<CompletionItem> resolveCompletionItem(CompletionItem unresolved) {
-		logInfo(">> document/resolveCompletionItem");
-		CompletionResolveHandler handler = new CompletionResolveHandler(preferenceManager);
-		final IProgressMonitor[] monitors = new IProgressMonitor[1];
-		CompletableFuture<CompletionItem> result = computeAsync((monitor) -> {
-			monitors[0] = monitor;
+		debugTrace(">> document/resolveCompletionItem");
+		try {
+			CompletionResolveHandler handler = new CompletionResolveHandler(preferenceManager);
+			IProgressMonitor monitor = new NullProgressMonitor();
 			if ((Boolean.getBoolean(JAVA_LSP_JOIN_ON_COMPLETION))) {
 				waitForLifecycleJobs(monitor);
 			}
-			return handler.resolve(unresolved, monitor);
-		});
-		result.join();
-		if (monitors[0].isCanceled()) {
-			result.cancel(true);
+			CompletionItem result = handler.resolve(unresolved, monitor);
+			return CompletableFuture.completedFuture(result);
+		} catch (Exception ex) {
+			return CompletableFuture.failedFuture(ex);
 		}
-		return result;
 	}
 
 	/* (non-Javadoc)
@@ -576,7 +661,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<Hover> hover(HoverParams position) {
-		logInfo(">> document/hover");
+		debugTrace(">> document/hover");
 		HoverHandler handler = new HoverHandler(this.preferenceManager);
 		return computeAsync((monitor) -> handler.hover(position, monitor));
 	}
@@ -586,7 +671,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<SignatureHelp> signatureHelp(SignatureHelpParams position) {
-		logInfo(">> document/signatureHelp");
+		debugTrace(">> document/signatureHelp");
 		SignatureHelpHandler handler = new SignatureHelpHandler(preferenceManager);
 		return computeAsync((monitor) -> handler.signatureHelp(position, monitor));
 	}
@@ -596,11 +681,21 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<Either<List<? extends Location>, List<? extends LocationLink>>> definition(DefinitionParams position) {
-		logInfo(">> document/definition");
+		debugTrace(">> document/definition");
 		NavigateToDefinitionHandler handler = new NavigateToDefinitionHandler(this.preferenceManager);
 		return computeAsync((monitor) -> {
 			waitForLifecycleJobs(monitor);
 			return Either.forLeft(handler.definition(position, monitor));
+		});
+	}
+
+	@Override
+	public CompletableFuture<Either<List<? extends Location>, List<? extends LocationLink>>> declaration(DeclarationParams position) {
+		debugTrace(">> document/declaration");
+		NavigateToDeclarationHandler handler = new NavigateToDeclarationHandler(this.preferenceManager);
+		return computeAsync((monitor) -> {
+			waitForLifecycleJobs(monitor);
+			return Either.forLeft(handler.declaration(position, monitor));
 		});
 	}
 
@@ -609,7 +704,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<Either<List<? extends Location>, List<? extends LocationLink>>> typeDefinition(TypeDefinitionParams position) {
-		logInfo(">> document/typeDefinition");
+		debugTrace(">> document/typeDefinition");
 		NavigateToTypeDefinitionHandler handler = new NavigateToTypeDefinitionHandler();
 		return computeAsync((monitor) -> {
 			waitForLifecycleJobs(monitor);
@@ -622,14 +717,14 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<? extends Location>> references(ReferenceParams params) {
-		logInfo(">> document/references");
+		debugTrace(">> document/references");
 		ReferencesHandler handler = new ReferencesHandler(this.preferenceManager);
 		return computeAsync((monitor) -> handler.findReferences(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<List<? extends Location>> findLinks(FindLinksParams params) {
-		logInfo(">> java/findLinks");
+		debugTrace(">> java/findLinks");
 		return computeAsync((monitor) -> FindLinksHandler.findLinks(params.type, params.position, monitor));
 	}
 
@@ -638,7 +733,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<? extends DocumentHighlight>> documentHighlight(DocumentHighlightParams position) {
-		logInfo(">> document/documentHighlight");
+		debugTrace(">> document/documentHighlight");
 		return computeAsync((monitor) -> DocumentHighlightHandler.documentHighlight(position, monitor));
 	}
 
@@ -647,7 +742,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<Either<SymbolInformation, DocumentSymbol>>> documentSymbol(DocumentSymbolParams params) {
-		logInfo(">> document/documentSymbol");
+		debugTrace(">> document/documentSymbol");
 		DocumentSymbolHandler handler = new DocumentSymbolHandler(preferenceManager);
 		return computeAsync((monitor) -> {
 			waitForLifecycleJobs(monitor);
@@ -660,11 +755,15 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<Either<Command, CodeAction>>> codeAction(CodeActionParams params) {
-		logInfo(">> document/codeAction");
+		debugTrace(">> document/codeAction");
 		CodeActionHandler handler = new CodeActionHandler(this.preferenceManager);
 		return computeAsync((monitor) -> {
 			waitForLifecycleJobs(monitor);
-			return handler.getCodeActionCommands(params, monitor);
+			// see https://github.com/eclipse-jdtls/eclipse.jdt.ls/issues/2799
+			// Optimize the performance of the code actions
+			synchronized (codeActionLock) {
+				return handler.getCodeActionCommands(params, monitor);
+			}
 		});
 	}
 
@@ -673,14 +772,24 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<CodeAction> resolveCodeAction(CodeAction params) {
-		logInfo(">> codeAction/resolve");
+		debugTrace(">> codeAction/resolve");
+		Object data = params.getData();
 		// if no data property is specified, no further resolution the server can provide, so return the original result back.
-		if (params.getData() == null) {
+		if (data == null) {
 			return CompletableFuture.completedFuture(params);
 		}
-
+		if (data instanceof CodeActionData codeActionData) {
+			// if the data is CodeActionData and no proposal in the data, return the original result back.
+			if (codeActionData.getProposal() == null) {
+				return CompletableFuture.completedFuture(params);
+			}
+		}
+		if (CodeActionHandler.codeActionStore.isEmpty()) {
+			return CompletableFuture.completedFuture(params);
+		}
 		CodeActionResolveHandler handler = new CodeActionResolveHandler();
 		return computeAsync((monitor) -> {
+			waitForLifecycleJobs(monitor);
 			return handler.resolve(params, monitor);
 		});
 	}
@@ -690,7 +799,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<? extends CodeLens>> codeLens(CodeLensParams params) {
-		logInfo(">> document/codeLens");
+		debugTrace(">> document/codeLens");
 		CodeLensHandler handler = new CodeLensHandler(preferenceManager);
 		return computeAsync((monitor) -> {
 			waitForLifecycleJobs(monitor);
@@ -703,7 +812,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<CodeLens> resolveCodeLens(CodeLens unresolved) {
-		logInfo(">> codeLens/resolve");
+		debugTrace(">> codeLens/resolve");
 		CodeLensHandler handler = new CodeLensHandler(preferenceManager);
 		return computeAsync((monitor) -> {
 			waitForLifecycleJobs(monitor);
@@ -716,7 +825,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<? extends TextEdit>> formatting(DocumentFormattingParams params) {
-		logInfo(">> document/formatting");
+		debugTrace(">> document/formatting");
 		FormatterHandler handler = new FormatterHandler(preferenceManager);
 		return computeAsync((monitor) -> handler.formatting(params, monitor));
 	}
@@ -726,7 +835,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<? extends TextEdit>> rangeFormatting(DocumentRangeFormattingParams params) {
-		logInfo(">> document/rangeFormatting");
+		debugTrace(">> document/rangeFormatting");
 		FormatterHandler handler = new FormatterHandler(preferenceManager);
 		return computeAsync((monitor) -> handler.rangeFormatting(params, monitor));
 	}
@@ -736,7 +845,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<? extends TextEdit>> onTypeFormatting(DocumentOnTypeFormattingParams params) {
-		logInfo(">> document/onTypeFormatting");
+		debugTrace(">> document/onTypeFormatting");
 		FormatterHandler handler = new FormatterHandler(preferenceManager);
 		return computeAsync((monitor) -> handler.onTypeFormatting(params, monitor));
 	}
@@ -745,12 +854,12 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 * @see org.eclipse.lsp4j.services.TextDocumentService#prepareRename(org.eclipse.lsp4j.PrepareRenameParams)
 	 */
 	@Override
-	public CompletableFuture<Either<Range, PrepareRenameResult>> prepareRename(PrepareRenameParams params) {
-		logInfo(">> document/prepareRename");
-		PrepareRenameHandler handler = new PrepareRenameHandler();
+	public CompletableFuture<Either3<Range, PrepareRenameResult, PrepareRenameDefaultBehavior>> prepareRename(PrepareRenameParams params) {
+		debugTrace(">> document/prepareRename");
+		PrepareRenameHandler handler = new PrepareRenameHandler(preferenceManager);
 		return computeAsync((monitor) -> {
 			waitForLifecycleJobs(monitor);
-			return handler.prepareRename(params, monitor);
+			return Either3.forLeft3(handler.prepareRename(params, monitor));
 		});
 	}
 
@@ -759,7 +868,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<WorkspaceEdit> rename(RenameParams params) {
-		logInfo(">> document/rename");
+		debugTrace(">> document/rename");
 		RenameHandler handler = new RenameHandler(preferenceManager);
 		return computeAsync((monitor) -> {
 			waitForLifecycleJobs(monitor);
@@ -772,7 +881,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public void didOpen(DidOpenTextDocumentParams params) {
-		logInfo(">> document/didOpen");
+		debugTrace(">> document/didOpen");
 		documentLifeCycleHandler.didOpen(params);
 	}
 
@@ -781,7 +890,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public void didChange(DidChangeTextDocumentParams params) {
-		logInfo(">> document/didChange");
+		debugTrace(">> document/didChange");
 		documentLifeCycleHandler.didChange(params);
 	}
 
@@ -790,8 +899,21 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public void didClose(DidCloseTextDocumentParams params) {
-		logInfo(">> document/didClose");
+		debugTrace(">> document/didClose");
 		documentLifeCycleHandler.didClose(params);
+	}
+
+	@Override
+	public void validateDocument(ValidateDocumentParams params) {
+		logInfo(">> java/validateDocument");
+		computeAsync((monitor) -> {
+			try {
+				documentLifeCycleHandler.validateDocument(params.getTextDocument().getUri(), true, monitor);
+			} catch (JavaModelException e) {
+				// ignore
+			}
+			return null;
+		});
 	}
 
 	/* (non-Javadoc)
@@ -799,7 +921,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<TextEdit>> willSaveWaitUntil(WillSaveTextDocumentParams params) {
-		logInfo(">> document/willSaveWaitUntil");
+		debugTrace(">> document/willSaveWaitUntil");
 		SaveActionHandler handler = new SaveActionHandler(preferenceManager);
 		return computeAsync((monitor) -> handler.willSaveWaitUntil(params, monitor));
 	}
@@ -809,13 +931,13 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public void didSave(DidSaveTextDocumentParams params) {
-		logInfo(">> document/didSave");
+		debugTrace(">> document/didSave");
 		documentLifeCycleHandler.didSave(params);
 	}
 
 	@Override
 	public CompletableFuture<WorkspaceEdit> willRenameFiles(RenameFilesParams params) {
-		logInfo(">> workspace/willRenameFiles");
+		debugTrace(">> workspace/willRenameFiles");
 		return computeAsyncWithClientProgress((monitor) -> {
 			waitForLifecycleJobs(monitor);
 			return FileEventHandler.handleWillRenameFiles(params, monitor);
@@ -827,7 +949,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<String> classFileContents(TextDocumentIdentifier param) {
-		logInfo(">> java/classFileContents");
+		debugTrace(">> java/classFileContents");
 		ContentProviderManager handler = JavaLanguageServerPlugin.getContentProviderManager();
 		URI uri = JDTUtils.toURI(param.getUri());
 		return computeAsync((monitor) -> handler.getContent(uri, monitor));
@@ -838,9 +960,19 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public void projectConfigurationUpdate(TextDocumentIdentifier param) {
-		logInfo(">> java/projectConfigurationUpdate");
+		debugTrace(">> java/projectConfigurationUpdate");
 		ProjectConfigurationUpdateHandler handler = new ProjectConfigurationUpdateHandler(pm);
 		handler.updateConfiguration(param);
+	}
+
+	/* (non-Javadoc)
+	 * @see org.eclipse.jdt.ls.core.internal.JavaProtocolExtensions#projectConfigurationsUpdate(org.eclipse.lsp4j.extended.ProjectConfigurationsUpdateParam)
+	 */
+	@Override
+	public void projectConfigurationsUpdate(ProjectConfigurationsUpdateParam param) {
+		debugTrace(">> java/projectConfigurationsUpdate");
+		ProjectConfigurationUpdateHandler handler = new ProjectConfigurationUpdateHandler(pm);
+		handler.updateConfigurations(param.getIdentifiers());
 	}
 
 	/* (non-Javadoc)
@@ -851,9 +983,16 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 		// See https://github.com/redhat-developer/vscode-java/issues/1929,
 		// some language client will convert the parameter to an array.
 		boolean rebuild = forceRebuild.isLeft() ? forceRebuild.getLeft() : forceRebuild.getRight()[0];
-		logInfo(">> java/buildWorkspace (" + (rebuild ? "full)" : "incremental)"));
+		debugTrace(">> java/buildWorkspace (" + (rebuild ? "full)" : "incremental)"));
 		BuildWorkspaceHandler handler = new BuildWorkspaceHandler(pm);
 		return computeAsyncWithClientProgress((monitor) -> handler.buildWorkspace(rebuild, monitor));
+	}
+
+	@Override
+	public CompletableFuture<BuildWorkspaceStatus> buildProjects(ProjectBuildParams params) {
+		debugTrace(">> java/buildProjects");
+		BuildWorkspaceHandler handler = new BuildWorkspaceHandler(pm);
+		return computeAsyncWithClientProgress((monitor) -> handler.buildProjects(params, monitor));
 	}
 
 	/* (non-Javadoc)
@@ -861,14 +1000,16 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public void didChangeWorkspaceFolders(DidChangeWorkspaceFoldersParams params) {
-		logInfo(">> java/didChangeWorkspaceFolders");
-		WorkspaceFolderChangeHandler handler = new WorkspaceFolderChangeHandler(pm, preferenceManager);
-		handler.update(params);
+		debugTrace(">> java/didChangeWorkspaceFolders");
+		if (!preferenceManager.getClientPreferences().skipProjectConfiguration()) {
+			WorkspaceFolderChangeHandler handler = new WorkspaceFolderChangeHandler(pm, preferenceManager);
+			handler.update(params);
+		}
 	}
 
 	@Override
 	public CompletableFuture<Either<List<? extends Location>, List<? extends LocationLink>>> implementation(ImplementationParams position) {
-		logInfo(">> document/implementation");
+		debugTrace(">> document/implementation");
 		return computeAsyncWithClientProgress((monitor) -> {
 			ImplementationsHandler handler = new ImplementationsHandler(preferenceManager);
 			return Either.forLeft(handler.findImplementations(position, monitor));
@@ -880,7 +1021,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	 */
 	@Override
 	public CompletableFuture<List<FoldingRange>> foldingRange(FoldingRangeRequestParams params) {
-		logInfo(">> document/foldingRange");
+		debugTrace(">> document/foldingRange");
 		return computeAsyncWithClientProgress((monitor) -> {
 			waitForLifecycleJobs(monitor);
 			return new FoldingRangeHandler().foldingRange(params, monitor);
@@ -889,7 +1030,7 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 
 	@Override
 	public CompletableFuture<List<SelectionRange>> selectionRange(SelectionRangeParams params) {
-		logInfo(">> document/selectionRange");
+		debugTrace(">> document/selectionRange");
 		return computeAsyncWithClientProgress((monitor) -> {
 			waitForLifecycleJobs(monitor);
 			return new SelectionRangeHandler().selectionRange(params, monitor);
@@ -898,143 +1039,177 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 
 	@Override
 	public CompletableFuture<OverridableMethodsResponse> listOverridableMethods(CodeActionParams params) {
-		logInfo(">> java/listOverridableMethods");
+		debugTrace(">> java/listOverridableMethods");
 		return computeAsync((monitor) -> OverrideMethodsHandler.listOverridableMethods(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<WorkspaceEdit> addOverridableMethods(AddOverridableMethodParams params) {
-		logInfo(">> java/addOverridableMethods");
+		debugTrace(">> java/addOverridableMethods");
 		return computeAsync((monitor) -> OverrideMethodsHandler.addOverridableMethods(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<CheckHashCodeEqualsResponse> checkHashCodeEqualsStatus(CodeActionParams params) {
-		logInfo(">> java/checkHashCodeEqualsStatus");
+		debugTrace(">> java/checkHashCodeEqualsStatus");
 		return computeAsync((monitor) -> HashCodeEqualsHandler.checkHashCodeEqualsStatus(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<WorkspaceEdit> generateHashCodeEquals(GenerateHashCodeEqualsParams params) {
-		logInfo(">> java/generateHashCodeEquals");
+		debugTrace(">> java/generateHashCodeEquals");
 		return computeAsync((monitor) -> HashCodeEqualsHandler.generateHashCodeEquals(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<CheckToStringResponse> checkToStringStatus(CodeActionParams params) {
-		logInfo(">> java/checkToStringStatus");
+		debugTrace(">> java/checkToStringStatus");
 		return computeAsync((monitor) -> GenerateToStringHandler.checkToStringStatus(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<WorkspaceEdit> generateToString(GenerateToStringParams params) {
-		logInfo(">> java/generateToString");
+		debugTrace(">> java/generateToString");
 		return computeAsync((monitor) -> GenerateToStringHandler.generateToString(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<WorkspaceEdit> organizeImports(CodeActionParams params) {
-		logInfo(">> java/organizeImports");
+		debugTrace(">> java/organizeImports");
 		return computeAsync((monitor) -> OrganizeImportsHandler.organizeImports(client, params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<AccessorField[]> resolveUnimplementedAccessors(AccessorCodeActionParams params) {
-		logInfo(">> java/resolveUnimplementedAccessors");
+		debugTrace(">> java/resolveUnimplementedAccessors");
 		return computeAsync((monitor) -> GenerateAccessorsHandler.getUnimplementedAccessors(params));
 	}
 
 	@Override
 	public CompletableFuture<WorkspaceEdit> generateAccessors(GenerateAccessorsParams params) {
-		logInfo(">> java/generateAccessors");
+		debugTrace(">> java/generateAccessors");
 		return computeAsync((monitor) -> GenerateAccessorsHandler.generateAccessors(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<CheckConstructorsResponse> checkConstructorsStatus(CodeActionParams params) {
-		logInfo(">> java/checkConstructorsStatus");
+		debugTrace(">> java/checkConstructorsStatus");
 		return computeAsync((monitor) -> GenerateConstructorsHandler.checkConstructorsStatus(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<WorkspaceEdit> generateConstructors(GenerateConstructorsParams params) {
-		logInfo(">> java/generateConstructors");
+		debugTrace(">> java/generateConstructors");
 		return computeAsync((monitor) -> GenerateConstructorsHandler.generateConstructors(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<CheckDelegateMethodsResponse> checkDelegateMethodsStatus(CodeActionParams params) {
-		logInfo(">> java/checkDelegateMethodsStatus");
+		debugTrace(">> java/checkDelegateMethodsStatus");
 		return computeAsync((monitor) -> GenerateDelegateMethodsHandler.checkDelegateMethodsStatus(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<WorkspaceEdit> generateDelegateMethods(GenerateDelegateMethodsParams params) {
-		logInfo(">> java/generateDelegateMethods");
+		debugTrace(">> java/generateDelegateMethods");
 		return computeAsync((monitor) -> GenerateDelegateMethodsHandler.generateDelegateMethods(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<RefactorWorkspaceEdit> getRefactorEdit(GetRefactorEditParams params) {
-		logInfo(">> java/getRefactorEdit");
+		debugTrace(">> java/getRefactorEdit");
 		return computeAsync((monitor) -> GetRefactorEditHandler.getEditsForRefactor(params));
 	}
 
 	@Override
 	public CompletableFuture<List<SelectionInfo>> inferSelection(InferSelectionParams params) {
-		logInfo(">> java/inferSelection");
+		debugTrace(">> java/inferSelection");
 		return computeAsync((monitor) -> InferSelectionHandler.inferSelectionsForRefactor(params));
 	}
 
 	@Override
 	public CompletableFuture<MoveDestinationsResponse> getMoveDestinations(MoveParams params) {
-		logInfo(">> java/getMoveDestinations");
+		debugTrace(">> java/getMoveDestinations");
 		return computeAsync((monitor) -> MoveHandler.getMoveDestinations(params));
 	}
 
 	@Override
 	public CompletableFuture<RefactorWorkspaceEdit> move(MoveParams params) {
-		logInfo(">> java/move");
+		debugTrace(">> java/move");
 		return computeAsyncWithClientProgress((monitor) -> MoveHandler.move(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<List<SymbolInformation>> searchSymbols(SearchSymbolParams params) {
-		logInfo(">> java/searchSymbols");
+		debugTrace(">> java/searchSymbols");
 		return computeAsyncWithClientProgress((monitor) -> WorkspaceSymbolHandler.search(params.getQuery(), params.maxResults, params.projectName, params.sourceOnly, monitor));
 	}
 
 	@Override
 	public CompletableFuture<List<CallHierarchyItem>> prepareCallHierarchy(CallHierarchyPrepareParams params) {
-		logInfo(">> textDocument/prepareCallHierarchy");
+		debugTrace(">> textDocument/prepareCallHierarchy");
 		return computeAsyncWithClientProgress((monitor) -> new CallHierarchyHandler().prepareCallHierarchy(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<List<CallHierarchyIncomingCall>> callHierarchyIncomingCalls(CallHierarchyIncomingCallsParams params) {
-		logInfo(">> callHierarchy/incomingCalls");
+		debugTrace(">> callHierarchy/incomingCalls");
 		return computeAsyncWithClientProgress((monitor) -> new CallHierarchyHandler().callHierarchyIncomingCalls(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<List<CallHierarchyOutgoingCall>> callHierarchyOutgoingCalls(CallHierarchyOutgoingCallsParams params) {
-		logInfo(">> callHierarchy/outgoingCalls");
+		debugTrace(">> callHierarchy/outgoingCalls");
 		return computeAsyncWithClientProgress((monitor) -> new CallHierarchyHandler().callHierarchyOutgoingCalls(params, monitor));
 	}
 
 	@Override
 	public CompletableFuture<SemanticTokens> semanticTokensFull(SemanticTokensParams params) {
-		logInfo(">> textDocument/semanticTokens/full");
+		debugTrace(">> textDocument/semanticTokens/full");
 		return computeAsync(monitor -> SemanticTokensHandler.full(monitor, params,
 			documentLifeCycleHandler.new DocumentMonitor(params.getTextDocument().getUri())));
 	}
 
 	@Override
 	public CompletableFuture<List<InlayHint>> inlayHint(InlayHintParams params) {
-		logInfo(">> textDocument/inlayHint");
+		debugTrace(">> textDocument/inlayHint");
 		return computeAsync(monitor -> new InlayHintsHandler(preferenceManager).inlayHint(params, monitor));
 	}
 
+	@Override
+	public CompletableFuture<CheckExtractInterfaceResponse> checkExtractInterfaceStatus(CodeActionParams params) {
+		debugTrace(">> java/checkExtractInterfaceStatus");
+		return computeAsync((monitor) -> ExtractInterfaceHandler.checkExtractInterfaceStatus(params));
+	}
+
+	@Override
+	public CompletableFuture<List<TypeHierarchyItem>> prepareTypeHierarchy(TypeHierarchyPrepareParams params) {
+		logInfo(">> textDocument/prepareTypeHierarchy");
+		return computeAsync(monitor -> typeHierarchyHandler.prepareTypeHierarchy(params, monitor));
+	}
+
+	@Override
+	public CompletableFuture<List<TypeHierarchyItem>> typeHierarchySupertypes(TypeHierarchySupertypesParams params) {
+		logInfo(">> typeHierarchy/supertypes");
+		return computeAsync(monitor -> typeHierarchyHandler.getSupertypeItems(params, monitor));
+	}
+
+	@Override
+	public CompletableFuture<List<TypeHierarchyItem>> typeHierarchySubtypes(TypeHierarchySubtypesParams params) {
+		logInfo(">> typeHierarchy/subtypes");
+		return computeAsync(monitor -> typeHierarchyHandler.getSubtypeItems(params, monitor));
+	}
+
+	@Override
+	public NotebookDocumentService getNotebookDocumentService() {
+		return null;
+	}
+
+	@Override
+	public void setTrace(SetTraceParams params) {
+		// https://github.com/eclipse-jdtls/eclipse.jdt.ls/issues/2891
+		// FIXME: implement the behavior of this method.
+	}
 	private <R> CompletableFuture<R> computeAsyncWithClientProgress(Function<IProgressMonitor, R> code) {
 		return CompletableFutures.computeAsync((cc) -> {
 			IProgressMonitor monitor = progressReporterManager.getProgressReporter(cc);

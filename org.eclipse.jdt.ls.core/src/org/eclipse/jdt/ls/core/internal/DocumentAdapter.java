@@ -12,6 +12,7 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.internal;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -19,10 +20,13 @@ import org.eclipse.core.filebuffers.FileBuffers;
 import org.eclipse.core.filebuffers.ITextFileBuffer;
 import org.eclipse.core.filebuffers.ITextFileBufferManager;
 import org.eclipse.core.filebuffers.LocationKind;
+import org.eclipse.core.filesystem.EFS;
+import org.eclipse.core.filesystem.IFileStore;
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.ResourceAttributes;
 import org.eclipse.core.runtime.CoreException;
+import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.jdt.core.BufferChangedEvent;
 import org.eclipse.jdt.core.IBuffer;
@@ -84,8 +88,13 @@ public class DocumentAdapter implements IBuffer, IDocumentListener {
 
 	private Object lock = new Object();
 
-	private IOpenable fOwner;
-	private IFile fFile;
+	private final IOpenable fOwner;
+	private final IFile fFile;
+	/**
+	 * The file Path: in case of a resource, the resource workspace-relative
+	 * full path; in case of a plain file, the filesystem location.
+	 */
+	public final IPath filePath;
 	private boolean fIsClosed;
 
 	private List<IBufferChangedListener> fBufferListeners;
@@ -97,13 +106,33 @@ public class DocumentAdapter implements IBuffer, IDocumentListener {
 	public DocumentAdapter(IOpenable owner, IFile file) {
 		fOwner = owner;
 		fFile = file;
+		filePath = file.getFullPath();
 		fBufferListeners = new ArrayList<>(3);
 		fIsClosed = false;
 
 		ITextFileBufferManager manager= FileBuffers.getTextFileBufferManager();
 		try {
-			manager.connect(file.getFullPath(), LocationKind.IFILE, null);
-			fTextFileBuffer= manager.getTextFileBuffer(file.getFullPath(), LocationKind.IFILE);
+			manager.connect(filePath, LocationKind.IFILE, null);
+			fTextFileBuffer= manager.getTextFileBuffer(filePath, LocationKind.IFILE);
+		} catch (CoreException e) {
+		}
+	}
+
+	public DocumentAdapter(IOpenable owner, Path path) {
+		fOwner = owner;
+		fFile = null;
+		filePath = IPath.fromPath(path);
+		fBufferListeners = new ArrayList<>(3);
+		fIsClosed = false;
+
+		ITextFileBufferManager manager= FileBuffers.getTextFileBufferManager();
+		try {
+			IFileStore store = EFS.getStore(path.toUri());
+			manager.connectFileStore(store, null);
+			fTextFileBuffer= manager.getFileStoreTextFileBuffer(store);
+			if (fTextFileBuffer != null) {
+				fDocument = fTextFileBuffer.getDocument();
+			}
 		} catch (CoreException e) {
 		}
 	}
@@ -154,10 +183,10 @@ public class DocumentAdapter implements IBuffer, IDocumentListener {
 				fDocument.removeDocumentListener(this);
 			}
 
-			if (fTextFileBuffer != null && fFile != null) {
+			if (fTextFileBuffer != null) {
 				try {
 					ITextFileBufferManager manager= FileBuffers.getTextFileBufferManager();
-					manager.disconnect(fFile.getFullPath(), LocationKind.NORMALIZE, null);
+					manager.disconnect(filePath, fFile != null ? LocationKind.NORMALIZE : LocationKind.LOCATION, null);
 				} catch (CoreException x) {
 					// ignore
 				}
@@ -229,7 +258,9 @@ public class DocumentAdapter implements IBuffer, IDocumentListener {
 		if (fTextFileBuffer != null) {
 			return fTextFileBuffer.isCommitable();
 		}
-
+		if (fFile == null) {
+			return filePath.toFile().canWrite();
+		}
 		ResourceAttributes attributes = fFile.getResourceAttributes();
 		return attributes != null ? attributes.isReadOnly() : false;
 	}
@@ -272,7 +303,7 @@ public class DocumentAdapter implements IBuffer, IDocumentListener {
 					fDocument = fTextFileBuffer.getDocument();
 				} else {
 					ITextFileBufferManager manager= FileBuffers.getTextFileBufferManager();
-					fDocument =  manager.createEmptyDocument(fFile.getFullPath(), LocationKind.IFILE);
+					fDocument =  manager.createEmptyDocument(filePath, fFile != null ? LocationKind.IFILE : LocationKind.LOCATION);
 				}
 				fDocument.addDocumentListener(this);
 				((ISynchronizable)fDocument).setLockObject(lock);

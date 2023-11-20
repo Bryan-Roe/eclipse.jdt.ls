@@ -22,7 +22,9 @@ import static org.mockito.Mockito.when;
 
 import java.net.URI;
 
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.NullProgressMonitor;
+import org.eclipse.core.runtime.Path;
 import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IPackageFragment;
@@ -33,6 +35,8 @@ import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.ResourceUtils;
 import org.eclipse.jdt.ls.core.internal.WorkspaceHelper;
+import org.eclipse.jdt.ls.core.internal.contentassist.CompletionProposalDescriptionProvider;
+import org.eclipse.jdt.ls.core.internal.contentassist.CompletionProposalRequestor;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jdt.ls.core.internal.preferences.Preferences;
 import org.eclipse.lsp4j.MarkupContent;
@@ -81,6 +85,7 @@ public class SignatureHelpHandlerTest extends AbstractCompilationUnitBasedTest {
 		when(p.isImportMavenEnabled()).thenReturn(true);
 		when(p.isSignatureHelpEnabled()).thenReturn(true);
 		when(p.isSignatureHelpDescriptionEnabled()).thenReturn(false);
+		when(p.getMavenDefaultMojoExecutionAction()).thenReturn("ignore");
 		handler = new SignatureHelpHandler(preferenceManager);
 	}
 
@@ -174,6 +179,20 @@ public class SignatureHelpHandlerTest extends AbstractCompilationUnitBasedTest {
 		buf.append("}\n");
 		ICompilationUnit cu = pack1.createCompilationUnit("E.java", buf.toString(), false, null);
 		SignatureHelp help = getSignatureHelp(cu, 2, 34);
+		assertNotNull(help);
+		assertEquals(0, help.getSignatures().size());
+	}
+
+	@Test
+	public void testSignatureHelp_endOfDoc() throws JavaModelException {
+		IPackageFragment pack1 = sourceFolder.createPackageFragment("test1", false, null);
+		StringBuilder buf = new StringBuilder();
+		buf.append("package test1;\n");
+		buf.append("public class E {\n");
+		buf.append("   public int bar(String s) {  }\n");
+		buf.append("}\n");
+		ICompilationUnit cu = pack1.createCompilationUnit("E.java", buf.toString(), false, null);
+		SignatureHelp help = getSignatureHelp(cu, 3, 2);
 		assertNotNull(help);
 		assertEquals(0, help.getSignatures().size());
 	}
@@ -648,6 +667,18 @@ public class SignatureHelpHandlerTest extends AbstractCompilationUnitBasedTest {
 	}
 
 	@Test
+	public void testSignatureHelp_record() throws Exception {
+		importProjects("eclipse/java16");
+		IProject proj = WorkspaceHelper.getProject("java16");
+		IJavaProject javaProject = JavaCore.create(proj);
+		ICompilationUnit unit = (ICompilationUnit) javaProject.findElement(new Path("foo/bar/Bar.java"));
+		SignatureHelp help = getSignatureHelp(unit, 9, 10);
+		assertNotNull(help);
+		SignatureInformation signature = help.getSignatures().get(help.getActiveSignature());
+		assertTrue(signature.getLabel().equals("Edge(int fromNodeId, int toNodeId, Object fromPoint, Object toPoint, double length, Object profile)"));
+	}
+
+	@Test
 	public void testSignatureHelp_superConstructorInvocation() throws JavaModelException {
 		IPackageFragment pack1 = sourceFolder.createPackageFragment("test1", false, null);
 		StringBuilder buf = new StringBuilder();
@@ -954,6 +985,30 @@ public class SignatureHelpHandlerTest extends AbstractCompilationUnitBasedTest {
 	}
 
 	@Test
+	public void testSignatureHelp_invalidAST() throws JavaModelException {
+		IPackageFragment pack1 = sourceFolder.createPackageFragment("test1", false, null);
+		String content = """
+				package test1;
+				class X {
+					public static void main(string[] args) {
+
+					}
+
+					static void fun() {
+						int a
+						for (l < 10) {
+
+						}
+					}
+				}
+				""";
+
+		ICompilationUnit cu = pack1.createCompilationUnit("X.java", content, false, null);
+		SignatureHelp help = getSignatureHelp(cu, 2, 37);
+		assertEquals(0, help.getSignatures().size());
+	}
+
+	@Test
 	public void testSignatureHelp_nestedInvocation() throws JavaModelException {
 		IPackageFragment pack1 = sourceFolder.createPackageFragment("test1", false, null);
 		StringBuilder buf = new StringBuilder();
@@ -1115,12 +1170,57 @@ public class SignatureHelpHandlerTest extends AbstractCompilationUnitBasedTest {
 	}
 
 	@Test
+	public void testSignatureHelp_erasureType() throws Exception {
+		when(preferenceManager.getPreferences().isSignatureHelpDescriptionEnabled()).thenReturn(true);
+		IPackageFragment pack1 = sourceFolder.createPackageFragment("test1", false, null);
+		StringBuilder buf = new StringBuilder();
+		buf.append("package test1;\n");
+		buf.append("public class E {\n");
+		buf.append("	public void foo() {\n");
+		buf.append("		new V<String>();\n");
+		buf.append("	}\n");
+		buf.append("}\n");
+		buf.append("class V<T> {\n");
+		buf.append("	/** hi */\n");
+		buf.append("	public V() {}\n");
+		buf.append("	private V(String a) {}\n");
+		buf.append("}\n");
+		ICompilationUnit cu = pack1.createCompilationUnit("E.java", buf.toString(), false, null);
+		SignatureHelp help = getSignatureHelp(cu, 3, 16);
+		assertNotNull(help);
+		assertEquals(1, help.getSignatures().size());
+		Either<String, MarkupContent> documentation = help.getSignatures().get(help.getActiveSignature()).getDocumentation();
+		assertEquals("hi", documentation.getLeft().trim());
+	}
+
+	@Test
 	public void testSignatureHelpInClassFile() throws Exception {
 		String uri = "jdt://contents/java.base/java.lang/String.class";
 		String payload = HOVER_TEMPLATE.replace("${file}", uri).replace("${line}", "10").replace("${char}", "10");
 		SignatureHelpParams position = getParams(payload);
 		SignatureHelp sh = handler.signatureHelp(position, monitor);
 		assertNotNull(sh);
+	}
+
+	@Test
+	public void testSignatureHelpForSelectedCompletionProposal() throws JavaModelException {
+		IPackageFragment pack1 = sourceFolder.createPackageFragment("test1", false, null);
+		String content = """
+				package test1;
+				public class E {
+					public foo() {
+						new String()
+					}
+				}
+				""";
+		ICompilationUnit cu = pack1.createCompilationUnit("E.java", content, false, null);
+		int offset = content.indexOf("new String(") + "new String(".length();
+		CompletionProposalRequestor collector = new CompletionProposalRequestor(cu, offset, preferenceManager);
+		cu.codeComplete(offset, collector, monitor);
+		CompletionHandler.selectedProposal = collector.getProposals().get(0);
+		SignatureHelp help = getSignatureHelp(cu, 3, 13);
+		StringBuilder description = CompletionProposalDescriptionProvider.createMethodProposalDescription(CompletionHandler.selectedProposal);
+		assertEquals(description.toString(), help.getSignatures().get(help.getActiveSignature()).getLabel());
 	}
 
 	private void testAssertEquals(ICompilationUnit cu, int line, int character) {

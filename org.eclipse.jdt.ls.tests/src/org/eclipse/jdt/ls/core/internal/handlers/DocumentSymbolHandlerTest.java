@@ -20,7 +20,9 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.when;
 
+import java.io.File;
 import java.io.UnsupportedEncodingException;
+import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -30,10 +32,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import com.google.common.collect.TreeTraverser;
-
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.ls.core.internal.ClassFileUtil;
 import org.eclipse.jdt.ls.core.internal.WorkspaceHelper;
@@ -50,6 +52,8 @@ import org.eclipse.lsp4j.TextDocumentIdentifier;
 import org.eclipse.lsp4j.jsonrpc.messages.Either;
 import org.junit.Before;
 import org.junit.Test;
+
+import com.google.common.collect.TreeTraverser;
 
 /**
  * @author snjeza
@@ -157,6 +161,14 @@ public class DocumentSymbolHandlerTest extends AbstractProjectsManagerBasedTest 
 		assertHasHierarchicalSymbol("foo() : void", "MyInterface", SymbolKind.Method, symbols);
 		assertHasHierarchicalSymbol("MyClass", "Bar", SymbolKind.Class, symbols);
 		assertHasHierarchicalSymbol("bar() : void", "MyClass", SymbolKind.Method, symbols);
+		assertHasHierarchicalSymbol("org.sample", null, SymbolKind.Package, symbols);
+	}
+
+	@Test
+	public void testPackage_class() throws Exception {
+		String className = "org.apache.commons.lang3.text.WordUtils";
+		List<? extends DocumentSymbol> symbols = getHierarchicalSymbols(className);
+		assertHasHierarchicalSymbol("org.apache.commons.lang3.text", null, SymbolKind.Package, symbols);
 	}
 
 	@Test
@@ -211,9 +223,44 @@ public class DocumentSymbolHandlerTest extends AbstractProjectsManagerBasedTest 
 		assertTrue("Should be deprecated", deprecated.getDeprecated());
 	}
 
+	@Test
+	public void testLombok() throws Exception {
+		boolean lombokDisabled = "true".equals(System.getProperty("jdt.ls.lombok.disabled"));
+		if (lombokDisabled) {
+			return;
+		}
+		importProjects("maven/mavenlombok");
+		project = ResourcesPlugin.getWorkspace().getRoot().getProject("mavenlombok");
+		String className = "org.sample.Test";
+		List<? extends SymbolInformation> symbols = getSymbols(className);
+		//@formatter:on
+		assertFalse("No symbols found for " + className, symbols.isEmpty());
+		assertHasSymbol("Test", "Test.java", SymbolKind.Class, symbols);
+		Optional<? extends SymbolInformation> method = symbols.stream().filter(s -> (s.getKind() == SymbolKind.Method)).findAny();
+		assertFalse(method.isPresent());
+	}
+
+	@Test
+	public void testDecompiledSource() throws Exception {
+		importProjects("eclipse/reference");
+		IProject project = WorkspaceHelper.getProject("reference");
+		List<? extends DocumentSymbol> symbols = internalGetHierarchicalSymbols(project, monitor, "org.sample.Foo");
+		assertEquals(2, symbols.size());
+		assertHasHierarchicalSymbol("org.sample", null, SymbolKind.Package, symbols);
+		assertHasHierarchicalSymbol("Foo", null, SymbolKind.Enum, symbols);
+		assertHasHierarchicalSymbol("FOO1", "Foo", SymbolKind.EnumMember, symbols);
+		assertHasHierarchicalSymbol("value", "Foo", SymbolKind.Field, symbols);
+		assertHasHierarchicalSymbol("getValue() : int", "Foo", SymbolKind.Method, symbols);
+		assertHasHierarchicalSymbol("Foo(int)", "Foo", SymbolKind.Constructor, symbols);
+	}
+
 	private List<? extends DocumentSymbol> internalGetHierarchicalSymbols(IProject project, IProgressMonitor monitor, String className)
 			throws JavaModelException, UnsupportedEncodingException, InterruptedException, ExecutionException {
 		String uri = ClassFileUtil.getURI(project, className);
+		return getHierarchicalDocumentSymbols(uri, monitor);
+	}
+
+	private List<? extends DocumentSymbol> getHierarchicalDocumentSymbols(String uri, IProgressMonitor monitor) {
 		TextDocumentIdentifier identifier = new TextDocumentIdentifier(uri);
 		DocumentSymbolParams params = new DocumentSymbolParams();
 		params.setTextDocument(identifier);
@@ -236,13 +283,17 @@ public class DocumentSymbolHandlerTest extends AbstractProjectsManagerBasedTest 
 	}
 
 	private void assertHasHierarchicalSymbol(String expectedType, String expectedParent, SymbolKind expectedKind, Collection<? extends DocumentSymbol> symbols) {
-		Optional<? extends DocumentSymbol> parent = asStream(symbols).filter(s -> expectedParent.equals(s.getName() + s.getDetail())).findFirst();
-		assertTrue("Cannot find parent with name: " + expectedParent, parent.isPresent());
-		Optional<? extends DocumentSymbol> symbol = asStream(symbols)
-															.filter(s -> expectedType.equals(s.getName() + s.getDetail()) && parent.get().getChildren().contains(s))
-															.findFirst();
+		Optional<? extends DocumentSymbol> symbol;
+		if (expectedParent != null) {
+			Optional<? extends DocumentSymbol> parent = asStream(symbols).filter(s -> expectedParent.equals(s.getName() + s.getDetail())).findFirst();
+			assertTrue("Cannot find parent with name: " + expectedParent, parent.isPresent());
+			symbol = asStream(symbols).filter(s -> expectedType.equals(s.getName() + s.getDetail()) && parent.get().getChildren().contains(s)).findFirst();
+		} else {
+			symbol = symbols.stream().filter(s -> expectedType.equals(s.getName())).findFirst();
+		}
 		assertTrue(expectedType + " (" + expectedParent + ")" + " is missing from " + symbols, symbol.isPresent());
 		assertKind(expectedKind, symbol.get());
+
 	}
 
 	private void assertKind(SymbolKind expectedKind, SymbolInformation symbol) {
@@ -313,5 +364,28 @@ public class DocumentSymbolHandlerTest extends AbstractProjectsManagerBasedTest 
 		return position != null && position.getLine() >= 0 && position.getCharacter() >= 0;
 	}
 
+	@Test
+	public void testDocumentSymbolsOnPlainFile() throws Exception {
+		String previous = System.getProperty("GENERATES_METADATA_FILES_AT_PROJECT_ROOT");
+		File f = File.createTempFile("testDocumentSymbolsOnPlainFile", ".java");
+		Files.writeString(f.toPath(), """
+			public class SomeClass {
+				int someField;
+			}
+			""");
+		try {
+			cleanUp(); // reset LS so the GENERATES_METADATA_FILES_AT_PROJECT_ROOT takes effect
+			List<? extends DocumentSymbol> symbols = getHierarchicalDocumentSymbols(f.toURI().toString(), new NullProgressMonitor());
+			DocumentSymbol classSymbol = symbols.get(0);
+			assertEquals("someField", classSymbol.getChildren().get(0).getName());
+		} finally {
+			f.delete();
+			if (previous == null) {
+				System.clearProperty("GENERATES_METADATA_FILES_AT_PROJECT_ROOT");
+			} else {
+				System.setProperty("GENERATES_METADATA_FILES_AT_PROJECT_ROOT", previous);
+			}
+		}
+	}
 
 }

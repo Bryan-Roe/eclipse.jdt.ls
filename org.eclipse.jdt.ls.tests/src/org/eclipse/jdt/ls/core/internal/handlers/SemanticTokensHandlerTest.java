@@ -87,6 +87,7 @@ public class SemanticTokensHandlerTest extends AbstractProjectsManagerBasedTest 
 		TokenAssertionHelper.beginAssertion(classFileUri)
 			.assertNextToken("foo", "namespace")
 			.assertNextToken("public", "modifier")
+			.assertNextToken("class", "modifier")
 			.assertNextToken("bar", "class", "public", "declaration")
 			.assertNextToken("public", "modifier")
 			.assertNextToken("static", "modifier")
@@ -138,6 +139,7 @@ public class SemanticTokensHandlerTest extends AbstractProjectsManagerBasedTest 
 		TokenAssertionHelper.beginAssertion(getURI("Constructors.java"))
 			.assertNextToken("foo", "namespace")
 			.assertNextToken("public", "modifier")
+			.assertNextToken("class", "modifier")
 			.assertNextToken("Constructors", "class", "public", "declaration")
 			.assertNextToken("private", "modifier")
 			.assertNextToken("Constructors", "class", "private", "constructor", "declaration")
@@ -191,10 +193,12 @@ public class SemanticTokensHandlerTest extends AbstractProjectsManagerBasedTest 
 			.assertNextToken("InnerRecord", "record", "protected", "constructor")
 
 			.assertNextToken("protected", "modifier")
+			.assertNextToken("class", "modifier")
 			.assertNextToken("InnerClass", "class", "protected", "generic", "declaration")
 			.assertNextToken("T", "typeParameter", "declaration")
 
 			.assertNextToken("private", "modifier")
+			.assertNextToken("class", "modifier")
 			.assertNextToken("GenericConstructor", "class", "private", "declaration")
 			.assertNextToken("protected", "modifier")
 			.assertNextToken("T", "typeParameter", "declaration")
@@ -208,12 +212,16 @@ public class SemanticTokensHandlerTest extends AbstractProjectsManagerBasedTest 
 			.assertNextToken("string", "parameter", "declaration")
 
 			.assertNextToken("private", "modifier")
+			.assertNextToken("record", "modifier")
 			.assertNextToken("InnerRecord", "record", "private", "static", "readonly", "declaration")
 			.assertNextToken("String", "class", "public", "readonly")
 			.assertNextToken("string", "recordComponent", "declaration")
 			.assertNextToken("integer", "recordComponent", "declaration")
 			.assertNextToken("protected", "modifier")
 			.assertNextToken("InnerRecord", "record", "protected", "constructor", "declaration")
+			.assertNextToken("public", "modifier")
+			.assertNextToken("interface", "modifier")
+			.assertNextToken("TestInterface", "interface", "public", "static", "declaration")
 		.endAssertion();
 	}
 
@@ -250,29 +258,44 @@ public class SemanticTokensHandlerTest extends AbstractProjectsManagerBasedTest 
 
 	@Test
 	public void testSemanticTokens_Types() throws JavaModelException {
-		TokenAssertionHelper.beginAssertion(getURI("Types.java"), "class", "interface", "enum", "annotation", "record", "typeParameter", "keyword")
+		TokenAssertionHelper.beginAssertion(getURI("Types.java"), "class", "interface", "enum", "annotation", "record", "typeParameter", "keyword", "modifier")
+			.assertNextToken("public", "modifier")
+			.assertNextToken("class", "modifier")
 			.assertNextToken("Types", "class", "public", "declaration")
+
+			.assertNextToken("public", "modifier")
 			.assertNextToken("String", "class", "public", "readonly")
 
+			.assertNextToken("protected", "modifier")
+			.assertNextToken("final", "modifier")
 			.assertNextToken("Class", "class", "public", "readonly", "generic")
 			.assertNextToken("String", "class", "public", "readonly")
 			.assertNextToken("class", "keyword")
 
-			.assertNextToken("SomeClass", "class", "generic")
+			.assertNextToken("public", "modifier")
+			.assertNextToken("SomeClass", "class", "public", "generic")
 			.assertNextToken("String", "class", "public", "readonly", "typeArgument")
-			.assertNextToken("SomeClass", "class", "generic", "typeArgument")
+			.assertNextToken("SomeClass", "class", "public", "generic", "typeArgument")
 			.assertNextToken("String", "class", "public", "readonly", "typeArgument")
 			.assertNextToken("Integer", "class", "public", "readonly", "typeArgument")
 
-			.assertNextToken("SomeClass", "class", "generic", "declaration")
+			.assertNextToken("SomeAnnotation", "annotation", "static")
+			.assertNextToken("Types", "class", "public")
+			.assertNextToken("class", "keyword")
+			.assertNextToken("public", "modifier")
+			.assertNextToken("class", "modifier")
+			.assertNextToken("SomeClass", "class", "public", "generic", "declaration")
 			.assertNextToken("T1", "typeParameter", "declaration")
 			.assertNextToken("T2", "typeParameter", "declaration")
 			.assertNextToken("T1", "typeParameter")
 			.assertNextToken("T2", "typeParameter")
 
+			.assertNextToken("interface", "modifier")
 			.assertNextToken("SomeInterface", "interface", "static", "declaration")
 			.assertNextToken("SomeEnum", "enum", "static", "readonly", "declaration")
 			.assertNextToken("SomeAnnotation", "annotation", "static", "declaration")
+			.assertNextToken("Class", "class", "public", "readonly", "generic")
+			.assertNextToken("record", "modifier")
 			.assertNextToken("SomeRecord", "record", "static", "readonly", "declaration")
 		.endAssertion();
 	}
@@ -378,6 +401,7 @@ public class SemanticTokensHandlerTest extends AbstractProjectsManagerBasedTest 
 			.assertNextToken("lang", "namespace", "documentation")
 			.assertNextToken("String", "class", "public", "readonly", "documentation")
 			.assertNextToken("public", "modifier")
+			.assertNextToken("class", "modifier")
 			.assertNextToken("Javadoc", "class", "public", "declaration")
 
 			.assertNextToken("@code", "keyword", "documentation")

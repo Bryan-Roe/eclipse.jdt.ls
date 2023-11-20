@@ -12,6 +12,8 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.internal;
 
+import static org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin.logInfo;
+
 import java.io.IOException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -34,12 +36,15 @@ public final class ParentProcessWatcher implements Runnable, Function<MessageCon
 	private static final boolean isJava1x = System.getProperty("java.version").startsWith("1.");
 	private static final int POLL_DELAY_SECS = 10;
 	private volatile long lastActivityTime;
-	private final LanguageServer server;
+	private final LanguageServerApplication server;
 	private ScheduledFuture<?> task;
 	private ScheduledExecutorService service;
 
-	public ParentProcessWatcher(LanguageServer server ) {
+	public ParentProcessWatcher(LanguageServerApplication server) {
 		this.server = server;
+		if (ProcessHandle.current().parent().isPresent()) {
+			this.server.setParentProcessId(ProcessHandle.current().parent().get().pid());
+		}
 		service = Executors.newScheduledThreadPool(1);
 		task =  service.scheduleWithFixedDelay(this, POLL_DELAY_SECS, POLL_DELAY_SECS, TimeUnit.SECONDS);
 	}
@@ -49,7 +54,15 @@ public final class ParentProcessWatcher implements Runnable, Function<MessageCon
 		if (!parentProcessStillRunning()) {
 			JavaLanguageServerPlugin.logInfo("Parent process stopped running, forcing server exit");
 			task.cancel(true);
-			server.exit();
+			if (JavaLanguageServerPlugin.getInstance() != null && JavaLanguageServerPlugin.getInstance().getProtocol() instanceof org.eclipse.lsp4j.services.LanguageServer languageServer) {
+				languageServer.exit();
+			} else {
+				server.exit();
+				Executors.newSingleThreadScheduledExecutor().schedule(() -> {
+					logInfo("Forcing exit after 1 min.");
+					System.exit(BaseJDTLanguageServer.FORCED_EXIT_CODE);
+				}, 1, TimeUnit.MINUTES);
+			}
 		}
 	}
 
@@ -69,6 +82,7 @@ public final class ParentProcessWatcher implements Runnable, Function<MessageCon
 		try {
 			return ProcessHandle.of(pid).isPresent();
 		} catch (UnsupportedOperationException | SecurityException e) {
+			JavaLanguageServerPlugin.logException("Unable to determine process state, fallback behaviour", e);
 			// Unable to determine process state, fallback behaviour
 		}
 

@@ -150,5 +150,4 @@ public class ProgressReport {
 	public void setSubTask(String subTask) {
 		this.subTask = subTask;
 	}
-
 }

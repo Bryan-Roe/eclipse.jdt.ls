@@ -18,6 +18,7 @@ import static org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin.logExcep
 import static org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin.logInfo;
 
 import java.net.URI;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,7 @@ import org.eclipse.jdt.ls.core.internal.handlers.CompletionResolveHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.DocumentHighlightHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.DocumentSymbolHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.FoldingRangeHandler;
+import org.eclipse.jdt.ls.core.internal.handlers.FormatterHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.HoverHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.NavigateToDefinitionHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.NavigateToTypeDefinitionHandler;
@@ -68,8 +70,12 @@ import org.eclipse.lsp4j.DidChangeWorkspaceFoldersParams;
 import org.eclipse.lsp4j.DidCloseTextDocumentParams;
 import org.eclipse.lsp4j.DidOpenTextDocumentParams;
 import org.eclipse.lsp4j.DidSaveTextDocumentParams;
+import org.eclipse.lsp4j.DocumentFormattingParams;
 import org.eclipse.lsp4j.DocumentHighlight;
 import org.eclipse.lsp4j.DocumentHighlightParams;
+import org.eclipse.lsp4j.DocumentOnTypeFormattingOptions;
+import org.eclipse.lsp4j.DocumentOnTypeFormattingParams;
+import org.eclipse.lsp4j.DocumentRangeFormattingParams;
 import org.eclipse.lsp4j.DocumentSymbol;
 import org.eclipse.lsp4j.DocumentSymbolParams;
 import org.eclipse.lsp4j.FoldingRange;
@@ -84,8 +90,10 @@ import org.eclipse.lsp4j.SelectionRange;
 import org.eclipse.lsp4j.SelectionRangeParams;
 import org.eclipse.lsp4j.SemanticTokens;
 import org.eclipse.lsp4j.SemanticTokensParams;
+import org.eclipse.lsp4j.SetTraceParams;
 import org.eclipse.lsp4j.SymbolInformation;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
+import org.eclipse.lsp4j.TextEdit;
 import org.eclipse.lsp4j.TypeDefinitionParams;
 import org.eclipse.lsp4j.jsonrpc.messages.Either;
 import org.eclipse.lsp4j.jsonrpc.services.JsonDelegate;
@@ -97,6 +105,7 @@ public class SyntaxLanguageServer extends BaseJDTLanguageServer implements Langu
 	public static final String JAVA_LSP_JOIN_ON_COMPLETION = "java.lsp.joinOnCompletion";
 
 	private SyntaxDocumentLifeCycleHandler documentLifeCycleHandler;
+	private WorkspaceEventsHandler workspaceEventHandler;
 	private ContentProviderManager contentProviderManager;
 	private ProjectsManager projectsManager;
 	private PreferenceManager preferenceManager;
@@ -161,6 +170,9 @@ public class SyntaxLanguageServer extends BaseJDTLanguageServer implements Langu
 	@Override
 	public void exit() {
 		logInfo(">> exit");
+		Executors.newSingleThreadScheduledExecutor().schedule(() -> {
+			System.exit(FORCED_EXIT_CODE);
+		}, 1, TimeUnit.MINUTES);
 		if (!shutdownReceived) {
 			shutdownJob.schedule();
 		}
@@ -170,9 +182,6 @@ public class SyntaxLanguageServer extends BaseJDTLanguageServer implements Langu
 			JavaLanguageServerPlugin.logException(e.getMessage(), e);
 		}
 		JavaLanguageServerPlugin.getLanguageServer().exit();
-		Executors.newSingleThreadScheduledExecutor().schedule(() -> {
-			System.exit(1);
-		}, 1, TimeUnit.MINUTES);
 	}
 
 	@Override
@@ -200,8 +209,18 @@ public class SyntaxLanguageServer extends BaseJDTLanguageServer implements Langu
 		}
 
 		PreferenceManager preferenceManager = JavaLanguageServerPlugin.getPreferencesManager();
+		if (preferenceManager.getClientPreferences().isFormattingDynamicRegistrationSupported()) {
+			toggleCapability(preferenceManager.getPreferences().isJavaFormatEnabled(), Preferences.FORMATTING_ID, Preferences.TEXT_DOCUMENT_FORMATTING, null);
+		}
+		if (preferenceManager.getClientPreferences().isRangeFormattingDynamicRegistrationSupported()) {
+			toggleCapability(preferenceManager.getPreferences().isJavaFormatEnabled(), Preferences.FORMATTING_RANGE_ID, Preferences.TEXT_DOCUMENT_RANGE_FORMATTING, null);
+		}
+		if (preferenceManager.getClientPreferences().isOnTypeFormattingDynamicRegistrationSupported()) {
+			toggleCapability(preferenceManager.getPreferences().isJavaFormatOnTypeEnabled(), Preferences.FORMATTING_ON_TYPE_ID, Preferences.TEXT_DOCUMENT_ON_TYPE_FORMATTING,
+					new DocumentOnTypeFormattingOptions(";", Arrays.asList("\n", "}")));
+		}
 		if (preferenceManager.getClientPreferences().isCompletionDynamicRegistered()) {
-			registerCapability(Preferences.COMPLETION_ID, Preferences.COMPLETION, CompletionHandler.DEFAULT_COMPLETION_OPTIONS);
+			registerCapability(Preferences.COMPLETION_ID, Preferences.COMPLETION, CompletionHandler.getDefaultCompletionOptions(preferenceManager));
 		}
 
 		if (!preferenceManager.getClientPreferences().isClientDocumentSymbolProviderRegistered() && preferenceManager.getClientPreferences().isDocumentSymbolDynamicRegistered()) {
@@ -244,6 +263,7 @@ public class SyntaxLanguageServer extends BaseJDTLanguageServer implements Langu
 	public void connectClient(JavaLanguageClient client) {
 		super.connectClient(client);
 		this.documentLifeCycleHandler.setClient(this.client);
+		this.workspaceEventHandler = new WorkspaceEventsHandler(this.projectsManager, this.client, this.documentLifeCycleHandler);
 	}
 
 	@Override
@@ -262,8 +282,7 @@ public class SyntaxLanguageServer extends BaseJDTLanguageServer implements Langu
 	@Override
 	public void didChangeWatchedFiles(DidChangeWatchedFilesParams params) {
 		logInfo(">> workspace/didChangeWatchedFiles ");
-		WorkspaceEventsHandler handler = new WorkspaceEventsHandler(this.projectsManager, this.client, this.documentLifeCycleHandler);
-		handler.didChangeWatchedFiles(params);
+		this.workspaceEventHandler.didChangeWatchedFiles(params);
 	}
 
 	@Override
@@ -288,6 +307,27 @@ public class SyntaxLanguageServer extends BaseJDTLanguageServer implements Langu
 	public void didSave(DidSaveTextDocumentParams params) {
 		logInfo(">> document/didSave");
 		documentLifeCycleHandler.didSave(params);
+	}
+
+	@Override
+	public CompletableFuture<List<? extends TextEdit>> formatting(DocumentFormattingParams params) {
+		logInfo(">> document/formatting");
+		FormatterHandler handler = new FormatterHandler(preferenceManager);
+		return computeAsync((monitor) -> handler.formatting(params, monitor));
+	}
+
+	@Override
+	public CompletableFuture<List<? extends TextEdit>> rangeFormatting(DocumentRangeFormattingParams params) {
+		logInfo(">> document/rangeFormatting");
+		FormatterHandler handler = new FormatterHandler(preferenceManager);
+		return computeAsync((monitor) -> handler.rangeFormatting(params, monitor));
+	}
+
+	@Override
+	public CompletableFuture<List<? extends TextEdit>> onTypeFormatting(DocumentOnTypeFormattingParams params) {
+		logInfo(">> document/onTypeFormatting");
+		FormatterHandler handler = new FormatterHandler(preferenceManager);
+		return computeAsync((monitor) -> handler.onTypeFormatting(params, monitor));
 	}
 
 	@Override
@@ -422,6 +462,12 @@ public class SyntaxLanguageServer extends BaseJDTLanguageServer implements Langu
 	public CompletableFuture<List<? extends DocumentHighlight>> documentHighlight(DocumentHighlightParams position) {
 		logInfo(">> document/documentHighlight");
 		return computeAsync((monitor) -> DocumentHighlightHandler.documentHighlight(position, monitor));
+	}
+
+	@Override
+	public void setTrace(SetTraceParams params) {
+		// https://github.com/eclipse-jdtls/eclipse.jdt.ls/issues/2891
+		// FIXME: implement the behavior of this method.
 	}
 
 	private void waitForLifecycleJobs(IProgressMonitor monitor) {

@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Hashtable;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
@@ -34,6 +35,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.codehaus.plexus.util.DirectoryScanner;
 import org.eclipse.buildship.core.internal.configuration.GradleProjectNature;
 import org.eclipse.core.resources.ICommand;
+import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IFolder;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
@@ -47,17 +49,23 @@ import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.core.runtime.Status;
 import org.eclipse.jdt.core.IClasspathEntry;
+import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.JavaModelException;
+import org.eclipse.jdt.core.manipulation.CoreASTProvider;
+import org.eclipse.jdt.ls.core.internal.commands.DiagnosticsCommand;
+import org.eclipse.jdt.ls.core.internal.handlers.DiagnosticsHandler;
 import org.eclipse.jdt.ls.core.internal.managers.BuildSupportManager;
 import org.eclipse.jdt.ls.core.internal.managers.GradleProjectImporter;
 import org.eclipse.jdt.ls.core.internal.managers.IBuildSupport;
 import org.eclipse.jdt.ls.core.internal.managers.InternalBuildSupports;
 import org.eclipse.jdt.ls.core.internal.managers.MavenProjectImporter;
 import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager;
+import org.eclipse.jdt.ls.core.internal.managers.UnmanagedFolderNature;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
+import org.eclipse.lsp4j.TextDocumentIdentifier;
 import org.eclipse.m2e.core.internal.IMavenConstants;
 
 /**
@@ -299,6 +307,22 @@ public final class ProjectUtils {
 		return ResourceUtils.isContainedIn(project.getLocation(), rootPaths);
 	}
 
+	/**
+	 * Check if the project is an unmanaged folder. (aka invisible project)
+	 * @param project
+	 */
+	public static boolean isUnmanagedFolder(IProject project) {
+		if (Objects.equals(project.getName(), ProjectsManager.DEFAULT_PROJECT_NAME)) {
+			return false;
+		}
+		if (isVisibleProject(project)) {
+			return false;
+		}
+
+		return hasNature(project, UnmanagedFolderNature.NATURE_ID);
+	}
+
+
 	public static List<IProject> getVisibleProjects(IPath workspaceRoot) {
 		List<IProject> projects = new ArrayList<>();
 		for (IProject project : ResourcesPlugin.getWorkspace().getRoot().getProjects()) {
@@ -311,7 +335,7 @@ public final class ProjectUtils {
 	}
 
 	public static IPath getProjectRealFolder(IProject project) {
-		if (project.isAccessible() && !isVisibleProject(project) && !project.equals(JavaLanguageServerPlugin.getProjectsManager().getDefaultProject())) {
+		if (project.isAccessible() && isUnmanagedFolder(project)) {
 			return project.getFolder(WORKSPACE_LINK).getLocation();
 		}
 		return project.getLocation();
@@ -583,6 +607,82 @@ public final class ProjectUtils {
 				lastSegment.equals(GradleProjectImporter.SETTINGS_GRADLE_KTS_DESCRIPTOR);
 		}
 		return false;
+	}
+
+	/**
+	 * Get a collection of projects based on the given document identifiers. The belonging projects of those
+	 * documents will be added to the returned collection.
+	 * @param identifiers a list of the {@link org.eclipse.lsp4j.TextDocumentIdentifier}
+	 */
+	public static Collection<IProject> getProjectsFromDocumentIdentifiers(List<TextDocumentIdentifier> identifiers) {
+		Set<IProject> projects = new HashSet<>();
+		for (TextDocumentIdentifier identifier : identifiers) {
+			IProject project = getProjectFromUri(identifier.getUri());
+			if (project != null) {
+				projects.add(project);
+				continue;
+			}
+			IFile file = JDTUtils.findFile(identifier.getUri());
+			if (file == null) {
+				continue;
+			}
+			project = file.getProject();
+			if (project != null) {
+				projects.add(project);
+			}
+		}
+		return projects;
+	}
+
+	/**
+	 * Get <code>IProject</code> from a uri string. Or <code>null</code> if cannot find any project from the given uri.
+	 * @param uri uri string
+	 */
+	public static IProject getProjectFromUri(String uri) {
+		IPath uriPath = ResourceUtils.canonicalFilePathFromURI(uri);
+		IProject[] projects = ResourcesPlugin.getWorkspace().getRoot().getProjects();
+		for (IProject project : projects) {
+			if (project.getLocation().equals(uriPath)) {
+				return project;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Refresh the diagnostics for all the working copies.
+	 * @param monitor progress monitor
+	 * @throws JavaModelException
+	 */
+	public static void refreshDiagnostics(IProgressMonitor monitor) throws JavaModelException {
+		if (JavaLanguageServerPlugin.getInstance().getProtocol() != null && JavaLanguageServerPlugin.getInstance().getProtocol().getClientConnection() != null) {
+			for (ICompilationUnit unit : JavaCore.getWorkingCopies(null)) {
+				IPath path = unit.getPath();
+				IFile file = ResourcesPlugin.getWorkspace().getRoot().getFile(path);
+				if (file.exists()) {
+					String contents = null;
+					try {
+						if (unit.hasUnsavedChanges()) {
+							contents = unit.getSource();
+						}
+					} catch (Exception e) {
+						JavaLanguageServerPlugin.logException(e.getMessage(), e);
+					}
+					unit.discardWorkingCopy();
+					if (unit.equals(CoreASTProvider.getInstance().getActiveJavaElement())) {
+						CoreASTProvider.getInstance().disposeAST();
+					}
+					unit = JavaCore.createCompilationUnitFrom(file);
+					unit.becomeWorkingCopy(monitor);
+					if (contents != null) {
+						unit.getBuffer().setContents(contents);
+					}
+				}
+				DiagnosticsHandler diagnosticHandler = new DiagnosticsHandler(JavaLanguageServerPlugin.getInstance().getProtocol().getClientConnection(), unit);
+				diagnosticHandler.clearDiagnostics();
+				DiagnosticsCommand.refreshDiagnostics(JDTUtils.toURI(unit), "thisFile", JDTUtils.isDefaultProject(unit) || !JDTUtils.isOnClassPath(unit));
+			}
+		}
 	}
 
 }

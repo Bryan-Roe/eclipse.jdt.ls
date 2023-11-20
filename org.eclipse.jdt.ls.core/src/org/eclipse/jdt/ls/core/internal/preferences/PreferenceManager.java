@@ -37,6 +37,9 @@ import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.manipulation.CodeStyleConfiguration;
 import org.eclipse.jdt.core.manipulation.JavaManipulation;
 import org.eclipse.jdt.internal.core.manipulation.CodeTemplateContextType;
+import org.eclipse.jdt.internal.core.manipulation.CodeTemplateContextType.CodeTemplateVariableResolver;
+import org.eclipse.jdt.internal.core.manipulation.JavaManipulationMessages;
+import org.eclipse.jdt.internal.core.manipulation.JavaManipulationPlugin;
 import org.eclipse.jdt.internal.core.manipulation.MembersOrderPreferenceCacheCommon;
 import org.eclipse.jdt.internal.core.manipulation.StubUtility;
 import org.eclipse.jdt.internal.corext.codemanipulation.CodeGenerationSettings;
@@ -89,21 +92,35 @@ public class PreferenceManager {
 		IEclipsePreferences defEclipsePrefs = DefaultScope.INSTANCE.getNode(IConstants.PLUGIN_ID);
 		defEclipsePrefs.put("org.eclipse.jdt.ui.typefilter.enabled", "");
 		defEclipsePrefs.put(CodeStyleConfiguration.ORGIMPORTS_IMPORTORDER, String.join(";", Preferences.JAVA_IMPORT_ORDER_DEFAULT));
-		defEclipsePrefs.put(MembersOrderPreferenceCacheCommon.APPEARANCE_MEMBER_SORT_ORDER, "T,SF,SI,SM,F,I,C,M"); //$NON-NLS-1$
+		defEclipsePrefs.put(MembersOrderPreferenceCacheCommon.APPEARANCE_MEMBER_SORT_ORDER, JavaLanguageServerPlugin.DEFAULT_MEMBER_SORT_ORDER);
+		defEclipsePrefs.put(MembersOrderPreferenceCacheCommon.APPEARANCE_VISIBILITY_SORT_ORDER, JavaLanguageServerPlugin.DEFAULT_VISIBILITY_SORT_ORDER);
 		defEclipsePrefs.put(CodeGenerationSettingsConstants.CODEGEN_USE_OVERRIDE_ANNOTATION, Boolean.TRUE.toString());
+		IEclipsePreferences fDefaultPreferenceStore = DefaultScope.INSTANCE.getNode(JavaManipulation.getPreferenceNodeId());
+		fDefaultPreferenceStore.put(JavaManipulationPlugin.CODEASSIST_FAVORITE_STATIC_MEMBERS, String.join(";", Preferences.JAVA_COMPLETION_FAVORITE_MEMBERS_DEFAULT));
 
 		defEclipsePrefs.put(StubUtility.CODEGEN_KEYWORD_THIS, Boolean.FALSE.toString());
 		defEclipsePrefs.put(StubUtility.CODEGEN_IS_FOR_GETTERS, Boolean.TRUE.toString());
 		defEclipsePrefs.put(StubUtility.CODEGEN_EXCEPTION_VAR_NAME, "e"); //$NON-NLS-1$
 		defEclipsePrefs.put(StubUtility.CODEGEN_ADD_COMMENTS, Boolean.FALSE.toString());
 
+		defEclipsePrefs.put("recommenders.chain.min_chain_length", "2");
+		defEclipsePrefs.put("recommenders.chain.max_chain_length", "3");
+		defEclipsePrefs.put("recommenders.chain.max_chains", "20");
+		defEclipsePrefs.put("recommenders.chain.timeout", "1");
+		defEclipsePrefs.put("recommenders.chain.ignore_types", ""); //$NON-NLS-1$
+
 		ContextTypeRegistry registry = new ContextTypeRegistry();
 		// Register standard context types from JDT
 		CodeTemplateContextType.registerContextTypes(registry);
 		// Register additional context types
-		registry.addContextType(new CodeTemplateContextType(CodeTemplatePreferences.CLASSSNIPPET_CONTEXTTYPE));
-		registry.addContextType(new CodeTemplateContextType(CodeTemplatePreferences.INTERFACESNIPPET_CONTEXTTYPE));
-		registry.addContextType(new CodeTemplateContextType(CodeTemplatePreferences.RECORDSNIPPET_CONTEXTTYPE));
+		for (String contextTypeId : List.of(
+				CodeTemplatePreferences.CLASSSNIPPET_CONTEXTTYPE,
+				CodeTemplatePreferences.INTERFACESNIPPET_CONTEXTTYPE,
+				CodeTemplatePreferences.RECORDSNIPPET_CONTEXTTYPE)) {
+			CodeTemplateContextType contextType = new CodeTemplateContextType(contextTypeId);
+			contextType.addResolver(new CodeTemplateVariableResolver(CodeTemplateContextType.FILE_COMMENT, JavaManipulationMessages.CodeTemplateContextType_variable_description_filecomment));
+			registry.addContextType(contextType);
+		}
 
 		// These should be upstreamed into CodeTemplateContextType & GlobalVariables
 		TemplateContextType tmp = registry.getContextType(CodeTemplateContextType.TYPECOMMENT_CONTEXTTYPE);
@@ -129,6 +146,7 @@ public class PreferenceManager {
 		templates.put(CodeTemplatePreferences.CODETEMPLATE_SETTERBODY, CodeGenerationTemplate.SETTERBOY.createTemplate());
 		templates.put(CodeTemplatePreferences.CODETEMPLATE_CATCHBODY, CodeGenerationTemplate.CATCHBODY.createTemplate());
 		templates.put(CodeTemplatePreferences.CODETEMPLATE_METHODBODY, CodeGenerationTemplate.METHODBODY.createTemplate());
+		templates.put(CodeTemplatePreferences.CODETEMPLATE_METHODBODY_SUPER, CodeGenerationTemplate.METHODBODYSUPER.createTemplate());
 		templates.put(CodeTemplatePreferences.CODETEMPLATE_NEWTYPE, CodeGenerationTemplate.NEWTYPE.createTemplate());
 		templates.put(CodeTemplatePreferences.CODETEMPLATE_FILECOMMENT, CodeGenerationTemplate.FILECOMMENT.createTemplate());
 		reloadTemplateStore();
@@ -143,6 +161,9 @@ public class PreferenceManager {
 		javaCoreOptions.put(JavaCore.COMPILER_PB_REDUNDANT_SUPERINTERFACE, JavaCore.WARNING);
 		javaCoreOptions.put(JavaCore.CODEASSIST_SUBWORD_MATCH, JavaCore.DISABLED);
 		javaCoreOptions.put(JavaCore.COMPILER_PB_MISSING_SERIAL_VERSION, JavaCore.IGNORE);
+		// workaround for https://github.com/redhat-developer/vscode-java/issues/718
+		javaCoreOptions.put(JavaCore.CORE_CIRCULAR_CLASSPATH, JavaCore.WARNING);
+		javaCoreOptions.put(JavaCore.COMPILER_IGNORE_UNNAMED_MODULE_FOR_SPLIT_PACKAGE, JavaCore.ENABLED);
 		JavaCore.setOptions(javaCoreOptions);
 	}
 

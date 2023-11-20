@@ -15,6 +15,7 @@ package org.eclipse.jdt.ls.core.internal.preferences;
 import static org.apache.commons.lang3.BooleanUtils.isTrue;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,7 @@ import java.util.Map;
 import org.eclipse.lsp4j.ClientCapabilities;
 import org.eclipse.lsp4j.DiagnosticsTagSupport;
 import org.eclipse.lsp4j.DynamicRegistrationCapabilities;
+import org.eclipse.lsp4j.InsertTextMode;
 import org.eclipse.lsp4j.MarkupKind;
 import org.eclipse.lsp4j.ResourceOperationKind;
 import org.eclipse.lsp4j.jsonrpc.messages.Either;
@@ -135,6 +137,10 @@ public class ClientPreferences {
 		return v3supported && isDynamicRegistrationSupported(capabilities.getTextDocument().getDefinition());
 	}
 
+	public boolean isDeclarationDynamicRegistered() {
+		return v3supported && isDynamicRegistrationSupported(capabilities.getTextDocument().getDeclaration());
+	}
+
 	public boolean isTypeDefinitionDynamicRegistered() {
 		return v3supported && isDynamicRegistrationSupported(capabilities.getTextDocument().getTypeDefinition());
 	}
@@ -163,12 +169,22 @@ public class ClientPreferences {
 		return v3supported && isDynamicRegistrationSupported(capabilities.getTextDocument().getSelectionRange());
 	}
 
+	public boolean isInlayHintDynamicRegistered() {
+		return v3supported && isDynamicRegistrationSupported(capabilities.getTextDocument().getInlayHint());
+	}
+
 	public boolean isWillSaveRegistered() {
 		return v3supported && capabilities.getTextDocument().getSynchronization() != null && isTrue(capabilities.getTextDocument().getSynchronization().getWillSave());
 	}
 
 	public boolean isWillSaveWaitUntilRegistered() {
 		return v3supported && capabilities.getTextDocument().getSynchronization() != null && isTrue(capabilities.getTextDocument().getSynchronization().getWillSaveWaitUntil());
+	}
+
+	public boolean isWorkDoneProgressSupported() {
+		return v3supported && capabilities.getWindow() != null
+				&& capabilities.getWindow().getWorkDoneProgress() != null
+				&& capabilities.getWindow().getWorkDoneProgress();
 	}
 
 	public boolean isWorkspaceApplyEditSupported() {
@@ -178,6 +194,7 @@ public class ClientPreferences {
 	public boolean isProgressReportSupported() {
 		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("progressReportProvider", "false").toString());
 	}
+
 
 	public boolean isClassFileContentSupported() {
 		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("classFileContentsSupport", "false").toString());
@@ -215,28 +232,27 @@ public class ClientPreferences {
 		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("advancedExtractRefactoringSupport", "false").toString());
 	}
 
+	public boolean isExtractInterfaceSupport() {
+		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("extractInterfaceSupport", "false").toString());
+	}
+
+	public boolean isAdvancedUpgradeGradleSupport() {
+		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("advancedUpgradeGradleSupport", "false").toString());
+	}
+
 	public boolean isExtractMethodInferSelectionSupported() {
 		Object supportList = extendedClientCapabilities.getOrDefault("inferSelectionSupport", new ArrayList<>());
-		if (supportList instanceof List<?>) {
-			return ((List<?>)supportList).contains("extractMethod");
-		}
-		return false;
+		return supportList instanceof List<?> list && list.contains("extractMethod");
 	}
 
 	public boolean isExtractVariableInferSelectionSupported() {
 		Object supportList = extendedClientCapabilities.getOrDefault("inferSelectionSupport", new ArrayList<>());
-		if (supportList instanceof List<?>) {
-			return ((List<?>)supportList).contains("extractVariable");
-		}
-		return false;
+		return supportList instanceof List<?> list && list.contains("extractVariable");
 	}
 
 	public boolean isExtractFieldInferSelectionSupported() {
 		Object supportList = extendedClientCapabilities.getOrDefault("inferSelectionSupport", new ArrayList<>());
-		if (supportList instanceof List<?>) {
-			return ((List<?>)supportList).contains("extractField");
-		}
-		return false;
+		return supportList instanceof List<?> list && list.contains("extractField");
 	}
 
 	public boolean isAdvancedIntroduceParameterRefactoringSupported() {
@@ -271,8 +287,8 @@ public class ClientPreferences {
 		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("gradleChecksumWrapperPromptSupport", "false").toString());
 	}
 
-	public boolean isResolveAdditionalTextEditsSupport() {
-		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("resolveAdditionalTextEditsSupport", "false").toString());
+	public boolean isExecuteClientCommandSupport() {
+		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("executeClientCommandSupport", "false").toString());
 	}
 
 	/**
@@ -290,11 +306,6 @@ public class ClientPreferences {
 				&& capabilities.getTextDocument().getCompletion().getCompletionItem().getDocumentationFormat() != null
 				&& capabilities.getTextDocument().getCompletion().getCompletionItem().getDocumentationFormat().contains(MarkupKind.MARKDOWN);
 		//@formatter:on
-	}
-
-	@Deprecated
-	public boolean isWorkspaceEditResourceChangesSupported() {
-		return capabilities.getWorkspace() != null && capabilities.getWorkspace().getWorkspaceEdit() != null && isTrue(capabilities.getWorkspace().getWorkspaceEdit().getResourceChanges());
 	}
 
 	public boolean isResourceOperationSupported() {
@@ -359,6 +370,10 @@ public class ClientPreferences {
 		return v3supported && isDynamicRegistrationSupported(capabilities.getTextDocument().getCallHierarchy());
 	}
 
+	public boolean isTypeHierarchyDynamicRegistrationSupported() {
+		return v3supported && isDynamicRegistrationSupported(capabilities.getTextDocument().getTypeHierarchy());
+	}
+
 	public boolean isResolveCodeActionSupported() {
 		//@formatter:off
 		return v3supported && capabilities.getTextDocument().getCodeAction() != null
@@ -391,4 +406,87 @@ public class ClientPreferences {
 			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getInsertReplaceSupport().booleanValue();
 	}
 
+	public boolean isCompletionListItemDefaultsPropertySupport(String property) {
+		return v3supported
+			&& capabilities.getTextDocument().getCompletion() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionList() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionList().getItemDefaults() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionList().getItemDefaults().contains(property);
+	}
+
+	public boolean isCompletionItemInsertTextModeSupport(InsertTextMode insertMode) {
+		return v3supported
+			&& capabilities.getTextDocument().getCompletion() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getInsertTextModeSupport() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getInsertTextModeSupport().getValueSet().contains(insertMode);
+	}
+
+	public InsertTextMode getCompletionItemInsertTextModeDefault() {
+		return capabilities.getTextDocument().getCompletion().getInsertTextMode();
+	}
+
+	public boolean isCompletionListItemDefaultsSupport() {
+		return isCompletionListItemDefaultsPropertySupport("editRange") || isCompletionListItemDefaultsPropertySupport("insertTextFormat") || isCompletionListItemDefaultsPropertySupport("insertTextMode");
+	}
+
+	public boolean isCompletionItemLabelDetailsSupport() {
+		return v3supported
+			&& capabilities.getTextDocument().getCompletion() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getLabelDetailsSupport() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getLabelDetailsSupport().booleanValue();
+	}
+
+	public boolean isResolveAdditionalTextEditsSupport() {
+		return isPropertySupportedForCompletionResolve("additionalTextEdits")
+			// TODO: the extended capability 'resolveAdditionalTextEditsSupport' should be deprecated.
+			|| Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("resolveAdditionalTextEditsSupport", "false").toString());
+	}
+
+	public boolean isCompletionResolveDocumentSupport() {
+		return isPropertySupportedForCompletionResolve("documentation");
+	}
+
+	public boolean isCompletionResolveDetailSupport() {
+		return isPropertySupportedForCompletionResolve("detail");
+	}
+
+	public boolean isPropertySupportedForCompletionResolve(String property) {
+		return (v3supported
+			&& capabilities.getTextDocument().getCompletion() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getResolveSupport() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getResolveSupport().getProperties() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getResolveSupport().getProperties().contains(property));
+	}
+
+	public boolean isInlayHintRefreshSupported() {
+		return v3supported
+			&& capabilities.getWorkspace().getInlayHint() != null
+			&& capabilities.getWorkspace().getInlayHint().getRefreshSupport() != null
+			&& capabilities.getWorkspace().getInlayHint().getRefreshSupport().booleanValue();
+	}
+
+	public Collection<String> excludedMarkerTypes() {
+		Object list = extendedClientCapabilities.getOrDefault("excludedMarkerTypes", null);
+		return list instanceof Collection<?> excludedMarkerTypes //
+				? excludedMarkerTypes.stream().filter(String.class::isInstance).map(String.class::cast).toList() //
+				: List.of();
+	}
+
+	public boolean isChangeAnnotationSupport() {
+		return v3supported
+			&& capabilities.getWorkspace() != null
+			&& capabilities.getWorkspace().getWorkspaceEdit() != null
+			&& capabilities.getWorkspace().getWorkspaceEdit().getChangeAnnotationSupport() != null;
+    }
+
+	public boolean skipProjectConfiguration() {
+		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("skipProjectConfiguration", "false").toString());
+	}
+
+	public boolean skipTextEventPropagation() {
+		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("skipTextEventPropagation", "false").toString());
+	}
 }

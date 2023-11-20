@@ -29,6 +29,7 @@ import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.SubMonitor;
@@ -47,7 +48,15 @@ public class EclipseProjectImporter extends AbstractProjectImporter {
 					.addExclusions("**/bin");//default Eclipse build dir
 			for (IProject project : ProjectUtils.getAllProjects(false)) {
 				File projectFile = project.getLocation().toFile();
-				eclipseDetector.addExclusions(projectFile.getAbsolutePath());
+				/**
+				 * The exclusion pattern will be used as a regular expression
+				 * that matches the files or folders to be excluded. On Windows,
+				 * the path separator (\) is a special character in regular
+				 * expressions, so it needs to be escaped with another backslash (\)
+				 * to be treated literally. For example, to exclude the folder
+				 * C:\Users\Hello, the exclusion pattern should be C:\\Users\\Hello.
+				 */
+				eclipseDetector.addExclusions(projectFile.getAbsolutePath().replace("\\", "\\\\"));
 			}
 			directories = eclipseDetector.scan(monitor);
 		}
@@ -106,9 +115,10 @@ public class EclipseProjectImporter extends AbstractProjectImporter {
 		IWorkspace workspace = ResourcesPlugin.getWorkspace();
 		IPath dotProjectPath = new Path(dir.resolve(DESCRIPTION_FILE_NAME).toAbsolutePath().toString());
 		IProjectDescription descriptor;
+		String name = null;
 		try {
 			descriptor = workspace.loadProjectDescription(dotProjectPath);
-			String name = descriptor.getName();
+			name = descriptor.getName();
 			if (!descriptor.hasNature(JavaCore.NATURE_ID)) {
 				return;
 			}
@@ -129,11 +139,35 @@ public class EclipseProjectImporter extends AbstractProjectImporter {
 			project.create(descriptor, monitor.newChild(1));
 			project.open(IResource.NONE, monitor.newChild(1));
 		} catch (CoreException e) {
-			JavaLanguageServerPlugin.log(e.getStatus());
+			IStatus status = e.getStatus();
+			if (status != null && status.isMultiStatus()) {
+				for (IStatus child : status.getChildren()) {
+					logStatus("Failed to import Eclipse project '" + name + "'.", child);
+				}
+			} else {
+				logStatus("Failed to import Eclipse project '" + name + "'.", status);
+			}
 			throw new RuntimeException(e);
 		} finally {
 			monitor.done();
 		}
+	}
+
+	private void logStatus(String message, IStatus status) {
+		if (status == null) {
+			return;
+		}
+
+		if (!status.isOK() && status.getSeverity() >= IStatus.ERROR) {
+			if (status.getException() != null) {
+				JavaLanguageServerPlugin.logException(message, status.getException());
+			} else {
+				JavaLanguageServerPlugin.logError(message + " " + status.getMessage());
+			}
+			return;
+		}
+
+		JavaLanguageServerPlugin.log(status);
 	}
 
 	private IPath fixDevice(IPath path) {

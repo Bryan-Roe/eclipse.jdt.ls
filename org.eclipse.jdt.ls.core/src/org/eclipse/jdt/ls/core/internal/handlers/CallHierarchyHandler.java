@@ -75,7 +75,7 @@ public class CallHierarchyHandler {
 		int character = params.getPosition().getCharacter();
 
 		try {
-			IMember candidate = getCallHierarchyElement(uri, line, character, monitor);
+			IMember candidate = getCallHierarchyElement(uri, line, character, true, monitor);
 			if (candidate == null) {
 				return null;
 			}
@@ -140,7 +140,7 @@ public class CallHierarchyHandler {
 		return null;
 	}
 
-	private IMember getCallHierarchyElement(String uri, int line, int character, IProgressMonitor monitor) throws JavaModelException {
+	private IMember getCallHierarchyElement(String uri, int line, int character, boolean prepare, IProgressMonitor monitor) throws JavaModelException {
 		Assert.isNotNull(uri, "uri");
 
 		ITypeRoot root = JDTUtils.resolveTypeRoot(uri);
@@ -148,8 +148,7 @@ public class CallHierarchyHandler {
 			return null;
 		}
 
-		if (root instanceof ICompilationUnit) {
-			ICompilationUnit unit = (ICompilationUnit) root;
+		if (root instanceof ICompilationUnit unit) {
 			if (root.getResource() == null) {
 				return null;
 			}
@@ -163,9 +162,14 @@ public class CallHierarchyHandler {
 		int offset = JsonRpcHelpers.toOffset(root, line, character);
 		List<IJavaElement> selectedElements = codeResolve(root, offset);
 		Stream<IJavaElement> possibleElements = selectedElements.stream().filter(CallHierarchyCore::isPossibleInputElement);
-		Optional<IJavaElement> firstElement = possibleElements.findFirst();
-		if (firstElement.isPresent() && firstElement.get() instanceof IMember) {
-			candidate = (IMember) firstElement.get();
+		Optional<IJavaElement> firstElement = possibleElements.findFirst().flatMap(element -> {
+			if (!prepare && element instanceof IType) {
+				return Optional.ofNullable(getEnclosingMember(root, offset)).map(IJavaElement.class::cast).filter(e -> !element.equals(e)).or(() -> Optional.of(element));
+			}
+			return Optional.of(element);
+		});
+		if (firstElement.isPresent() && firstElement.get() instanceof IMember member) {
+			candidate = member;
 		}
 
 		// If the member cannot be resolved, retrieve the enclosing method.
@@ -178,8 +182,9 @@ public class CallHierarchyHandler {
 
 	private List<CallHierarchyIncomingCall> getIncomingCallItemsAt(String uri, int line, int character, IProgressMonitor monitor) throws JavaModelException {
 		SubMonitor sub = SubMonitor.convert(monitor, 2);
-		IMember candidate = getCallHierarchyElement(uri, line, character, sub.split(1));
+		IMember candidate = getCallHierarchyElement(uri, line, character, false, sub.split(1));
 		if (candidate == null) {
+			sub.done();
 			return null;
 		}
 
@@ -190,7 +195,12 @@ public class CallHierarchyHandler {
 		if (wrapper == null || !wrapper.canHaveChildren()) {
 			return null;
 		}
-		MethodWrapper[] calls = wrapper.getCalls(sub.split(1));
+		IProgressMonitor callMonitor = sub.split(1);
+		MethodWrapper[] calls = wrapper.getCalls(callMonitor);
+		// MethodWrapper does not report progress when called on a cached value
+		// This can result in failing to report progress completion when a set of calls are cached
+		callMonitor.done();
+
 		if (calls == null) {
 			return null;
 		}
@@ -229,8 +239,9 @@ public class CallHierarchyHandler {
 
 	private List<CallHierarchyOutgoingCall> getOutgoingCallItemsAt(String uri, int line, int character, IProgressMonitor monitor) throws JavaModelException {
 		SubMonitor sub = SubMonitor.convert(monitor, 2);
-		IMember candidate = getCallHierarchyElement(uri, line, character, sub.split(1));
+		IMember candidate = getCallHierarchyElement(uri, line, character, false, sub.split(1));
 		if (candidate == null) {
+			sub.done();
 			return null;
 		}
 
@@ -240,8 +251,12 @@ public class CallHierarchyHandler {
 		if (wrapper == null) {
 			return null;
 		}
+		IProgressMonitor callMonitor = sub.split(1);
+		MethodWrapper[] calls = wrapper.getCalls(callMonitor);
+		// MethodWrapper does not report progress when called on a cached value
+		// This can result in failing to report progress completion when a set of calls are cached
+		callMonitor.done();
 
-		MethodWrapper[] calls = wrapper.getCalls(sub.split(1));
 		if (calls == null) {
 			return null;
 		}
@@ -266,8 +281,8 @@ public class CallHierarchyHandler {
 	}
 
 	private List<IJavaElement> codeResolve(IJavaElement input, int offset) throws JavaModelException {
-		if (input instanceof ICodeAssist) {
-			return Arrays.asList(((ICodeAssist) input).codeSelect(offset, 0));
+		if (input instanceof ICodeAssist codeAssist) {
+			return Arrays.asList(codeAssist.codeSelect(offset, 0));
 		}
 		return emptyList();
 	}
@@ -347,16 +362,15 @@ public class CallHierarchyHandler {
 		Assert.isNotNull(locationType, "locationType");
 
 		Location location = locationType.toLocation(element);
-		if (location == null && element instanceof IType) {
-			IType type = (IType) element;
+		if (location == null && element instanceof IType type) {
 			ICompilationUnit unit = (ICompilationUnit) type.getAncestor(COMPILATION_UNIT);
 			IClassFile classFile = (IClassFile) type.getAncestor(CLASS_FILE);
 			if (unit != null || (classFile != null && classFile.getSourceRange() != null)) {
 				location = locationType.toLocation(type);
 			}
 		}
-		if (location == null && element instanceof IMember && ((IMember) element).getClassFile() != null) {
-			location = JDTUtils.toLocation(((IMember) element).getClassFile());
+		if (location == null && element instanceof IMember member && member.getClassFile() != null) {
+			location = JDTUtils.toLocation(member.getClassFile());
 		}
 		return location;
 	}

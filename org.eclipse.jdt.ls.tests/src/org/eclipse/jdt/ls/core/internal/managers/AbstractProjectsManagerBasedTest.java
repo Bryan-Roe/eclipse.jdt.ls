@@ -13,6 +13,7 @@
 package org.eclipse.jdt.ls.core.internal.managers;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -64,6 +65,7 @@ import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.WorkingCopyOwner;
 import org.eclipse.jdt.core.formatter.DefaultCodeFormatterConstants;
+import org.eclipse.jdt.core.manipulation.CoreASTProvider;
 import org.eclipse.jdt.ls.core.internal.DocumentAdapter;
 import org.eclipse.jdt.ls.core.internal.JDTUtils;
 import org.eclipse.jdt.ls.core.internal.JavaClientConnection.JavaLanguageClient;
@@ -268,6 +270,7 @@ public abstract class AbstractProjectsManagerBasedTest {
 		projectsManager = null;
 		Platform.removeLogListener(logListener);
 		logListener = null;
+		Job.getJobManager().setProgressProvider(null);
 		try {
 			waitForBackgroundJobs();
 		} catch (Exception e) {
@@ -275,23 +278,26 @@ public abstract class AbstractProjectsManagerBasedTest {
 		}
 		WorkspaceHelper.deleteAllProjects();
 		try {
+			waitForBackgroundJobs();
+		} catch (Exception e) {
+			JavaLanguageServerPlugin.logException(e);
+		}
+		File workspaceDir = new File("target", "workingProjects");
+		try {
 			// https://github.com/eclipse/eclipse.jdt.ls/issues/996
-			FileUtils.forceDelete(getWorkingProjectDirectory());
+			FileUtils.forceDelete(workspaceDir);
 		} catch (IOException e) {
 			JavaLanguageServerPlugin.logException(e);
-			try {
-				getWorkingProjectDirectory().deleteOnExit();
-			} catch (IOException e1) {
-				JavaLanguageServerPlugin.logException(e1);
-			}
+			workspaceDir.deleteOnExit();
 		}
-		Job.getJobManager().setProgressProvider(null);
+		assertFalse(workspaceDir.exists());
 		try {
 			waitForBackgroundJobs();
 		} catch (Exception e) {
 			JavaLanguageServerPlugin.logException(e);
 		}
 		ResourcesPlugin.getWorkspace().save(true/*full save*/, null/*no progress*/);
+		CoreASTProvider.getInstance().disposeAST();
 	}
 
 	protected void assertIsJavaProject(IProject project) {
@@ -318,6 +324,23 @@ public abstract class AbstractProjectsManagerBasedTest {
 		} catch (Exception e) {
 			throw new RuntimeException(e);
 		}
+	}
+
+	protected IMarker getWarningMarker(IProject project, String message) {
+		if (message == null) {
+			return null;
+		}
+		try {
+			List<IMarker> markers = ResourceUtils.getWarningMarkers(project);
+			for (IMarker marker : markers) {
+				if (Objects.equals(message, marker.getAttribute(IMarker.MESSAGE))) {
+					return marker;
+				}
+			}
+		} catch (Exception e) {
+			// Do nothing and return null
+		}
+		return null;
 	}
 
 	protected void assertNoErrors(IResource resource) {

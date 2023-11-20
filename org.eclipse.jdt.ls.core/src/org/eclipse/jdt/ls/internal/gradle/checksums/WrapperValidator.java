@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2020 Red Hat Inc. and others.
+ * Copyright (c) 2020, 2023 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -46,17 +46,16 @@ import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.JobHelpers;
 import org.osgi.framework.Bundle;
 
-import com.google.common.base.Charsets;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.CharStreams;
-import com.google.common.io.Closeables;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 
@@ -101,9 +100,7 @@ public class WrapperValidator {
 				JobHelpers.waitForLoadingGradleVersionJob();
 			}
 			if (versionFile.exists()) {
-				InputStreamReader reader = null;
-				try {
-					reader = new InputStreamReader(new FileInputStream(versionFile), Charsets.UTF_8);
+				try (InputStreamReader reader = new InputStreamReader(new FileInputStream(versionFile), StandardCharsets.UTF_8);){
 					String json = CharStreams.toString(reader);
 					Gson gson = new GsonBuilder().create();
 					TypeToken<List<Map<String, String>>> typeToken = new TypeToken<>() {
@@ -162,12 +159,6 @@ public class WrapperValidator {
 					downloaded.set(true);
 				} catch (IOException | OperationCanceledException e) {
 					throw ExceptionFactory.newException(e);
-				} finally {
-					try {
-						Closeables.close(reader, false);
-					} catch (IOException e) {
-						// ignore
-					}
 				}
 			} else {
 				updateGradleVersionsFile();
@@ -186,12 +177,15 @@ public class WrapperValidator {
 		URL url = FileLocator.find(bundle, new org.eclipse.core.runtime.Path(GRADLE_CHECKSUMS));
 		if (url != null) {
 			try (InputStream inputStream = url.openStream(); InputStreamReader inputStreamReader = new InputStreamReader(inputStream); Reader reader = new BufferedReader(inputStreamReader)) {
-				JsonElement jsonElement = new JsonParser().parse(reader);
-				if (jsonElement instanceof JsonArray) {
-					JsonArray array = (JsonArray) jsonElement;
+				JsonElement jsonElement = JsonParser.parseReader(reader);
+				if (jsonElement instanceof JsonArray array) {
 					for (JsonElement json : array) {
-						String sha256 = json.getAsJsonObject().get("sha256").getAsString();
-						String wrapperChecksumUrl = json.getAsJsonObject().get("wrapperChecksumUrl").getAsString();
+						if (!json.isJsonObject()) {
+							continue;
+						}
+						JsonObject jsonObject = json.getAsJsonObject();
+						String sha256 = jsonObject.get("sha256").getAsString();
+						String wrapperChecksumUrl = jsonObject.get("wrapperChecksumUrl").getAsString();
 						if (sha256 != null) {
 							allowed.add(sha256);
 						}
@@ -317,21 +311,20 @@ public class WrapperValidator {
 		List<String> sha256Allowed = new ArrayList<>();
 		List<String> sha256Disallowed = new ArrayList<>();
 		for (Object object : gradleWrapperList) {
-			if (object instanceof Map) {
-				Map<?, ?> map = (Map<?, ?>) object;
+			if (object instanceof Map<?, ?> map) {
 				final ChecksumWrapper sha256 = new ChecksumWrapper();
 				sha256.allowed = true;
 				map.forEach((k, v) -> {
-					if (k instanceof String) {
-						switch ((String) k) {
+					if (k instanceof String key) {
+						switch (key) {
 							case "sha256":
-								if (v instanceof String) {
-									sha256.checksum = (String) v;
+								if (v instanceof String value) {
+									sha256.checksum = value;
 								}
 								break;
 							case "allowed":
-								if (v instanceof Boolean) {
-									sha256.allowed = (Boolean) v;
+								if (v instanceof Boolean bool) {
+									sha256.allowed = bool;
 								}
 								break;
 							default:

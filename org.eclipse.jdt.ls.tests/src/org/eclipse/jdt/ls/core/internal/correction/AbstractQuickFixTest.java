@@ -81,6 +81,11 @@ public class AbstractQuickFixTest extends AbstractProjectsManagerBasedTest {
 		fail(expected.name + " not found in " + allCommands);
 	}
 
+	protected void assertCodeActionExists(ICompilationUnit cu, String label) throws Exception {
+		List<Either<Command, CodeAction>> codeActionCommands = evaluateCodeActions(cu);
+		assertTrue("'" + label + "' should exist within the code actions", codeActionCommands.stream().filter(ca -> getTitle(ca).equals(label)).findAny().isPresent());
+	}
+
 	protected void assertCodeActionNotExists(ICompilationUnit cu, String label) throws Exception {
 		List<Either<Command, CodeAction>> codeActionCommands = evaluateCodeActions(cu);
 		assertFalse("'" + label + "' should not be added to the code actions", codeActionCommands.stream().filter(ca -> getTitle(ca).equals(label)).findAny().isPresent());
@@ -215,6 +220,7 @@ public class AbstractQuickFixTest extends AbstractProjectsManagerBasedTest {
 			}
 			String actionContent = evaluateCodeActionCommand(action);
 			actionContent = ResourceUtils.dos2Unix(actionContent);
+			content = ResourceUtils.dos2Unix(content);
 			assertEquals(title + " has the wrong content ", content, actionContent);
 		}
 	}

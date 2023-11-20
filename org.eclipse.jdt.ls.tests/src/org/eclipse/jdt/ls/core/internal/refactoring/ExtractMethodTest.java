@@ -255,10 +255,10 @@ public class ExtractMethodTest extends AbstractSelectionTest {
 		buf.append("public class E {\n");
 		buf.append("    public void foo() {\n");
 		buf.append("        String x = \"x\";\n");
-		buf.append("        extracted(x);\n");
+		buf.append("        getY(x);\n");
 		buf.append("    }\n");
 		buf.append("\n");
-		buf.append("    private void extracted(String x) {\n");
+		buf.append("    private void getY(String x) {\n");
 		buf.append("        /*[*/String y = \"a\" + x;\n");
 		buf.append("        System.out.println(x);/*]*/\n");
 		buf.append("    }\n");
@@ -446,7 +446,7 @@ public class ExtractMethodTest extends AbstractSelectionTest {
 		//@formatter:on
 		Range range = new Range(new Position(4, 14), new Position(4, 32));
 		List<Either<Command, CodeAction>> codeActions = evaluateCodeActions(cu, range);
-		assertEquals(4, codeActions.size());
+		assertEquals(5, codeActions.size());
 		List<Either<Command, CodeAction>> extractMethod = codeActions.stream().filter((c) -> c.getRight().getTitle().equals("Extract to method")).collect(Collectors.toList());
 		Expected e1 = new Expected("Extract to method", expected, JavaCodeActionKind.REFACTOR_EXTRACT_METHOD);
 		assertCodeActions(extractMethod, e1);
@@ -479,10 +479,10 @@ public class ExtractMethodTest extends AbstractSelectionTest {
 		buf.append("\n");
 		buf.append("public class E {\n");
 		buf.append("    public <E> void foo(E param) {\n");
-		buf.append("        extracted(param);\n");
+		buf.append("        getList(param);\n");
 		buf.append("    }\n");
 		buf.append("\n");
-		buf.append("    private <E> void extracted(E param) {\n");
+		buf.append("    private <E> void getList(E param) {\n");
 		buf.append("        /*[*/List<E> list = new ArrayList<E>();\n");
 		buf.append("        foo(param);/*]*/\n");
 		buf.append("    }\n");
@@ -647,10 +647,10 @@ public class ExtractMethodTest extends AbstractSelectionTest {
 		buf.append("\n");
 		buf.append("    public void foo() {\n");
 		buf.append("        var test = new String(\"blah\");\n");
-		buf.append("        extracted(test);\n");
+		buf.append("        getTest(test);\n");
 		buf.append("    }\n");
 		buf.append("\n");
-		buf.append("    private void extracted(String test) {\n");
+		buf.append("    private void getTest(String test) {\n");
 		buf.append("        test = test + test;\n");
 		buf.append("    }\n");
 		buf.append("}\n");
@@ -872,6 +872,140 @@ public class ExtractMethodTest extends AbstractSelectionTest {
 		Expected e2 = new Expected("Extract to method", buf.toString(), JavaCodeActionKind.REFACTOR_EXTRACT_METHOD);
 
 		assertCodeActions(cu, e1, e2);
+	}
+
+	//https://github.com/redhat-developer/vscode-java/issues/2011
+	@Test
+	public void testExtractMethodInferNameInContext() throws Exception {
+		Map<String, String> options = fJProject1.getOptions(true);
+		JavaCore.setComplianceOptions("11", options);
+		fJProject1.setOptions(options);
+
+		IPackageFragment pack1 = fSourceFolder.createPackageFragment("test1", false, null);
+
+		StringBuilder buf = new StringBuilder();
+		buf.append("package test1;\n");
+		buf.append("\n");
+		buf.append("public class E {\n");
+		buf.append("    public static void main() {\n");
+		buf.append("        var parts = new String[]{\"Hello\", \"Java\", \"16\"};\n");
+		buf.append("        /*[*/var greeting = new StringBuilder();\n");
+		buf.append("        for(int i = 0; i < parts.length; i++) {\n");
+		buf.append("            var part = parts[i];\n");
+		buf.append("            if (i >0) {\n");
+		buf.append("                greeting.append(\" \");\n");
+		buf.append("            }\n");
+		buf.append("            greeting.append(part);\n");
+		buf.append("        }/*]*/\n");
+		buf.append("        System.out.println(greeting);\n");
+		buf.append("    }\n");
+		buf.append("\n");
+		buf.append("}\n");
+
+		ICompilationUnit cu = pack1.createCompilationUnit("E.java", buf.toString(), false, null);
+
+		buf = new StringBuilder();
+		buf.append("package test1;\n");
+		buf.append("\n");
+		buf.append("public class E {\n");
+		buf.append("    public static void main() {\n");
+		buf.append("        var parts = new String[]{\"Hello\", \"Java\", \"16\"};\n");
+		buf.append("        var greeting = getGreeting(parts);\n");
+		buf.append("        System.out.println(greeting);\n");
+		buf.append("    }\n");
+		buf.append("\n");
+		buf.append("    private static StringBuilder getGreeting(String[] parts) {\n");
+		buf.append("        /*[*/var greeting = new StringBuilder();\n");
+		buf.append("        for(int i = 0; i < parts.length; i++) {\n");
+		buf.append("            var part = parts[i];\n");
+		buf.append("            if (i >0) {\n");
+		buf.append("                greeting.append(\" \");\n");
+		buf.append("            }\n");
+		buf.append("            greeting.append(part);\n");
+		buf.append("        }/*]*/\n");
+		buf.append("        return greeting;\n");
+		buf.append("    }\n");
+		buf.append("\n");
+		buf.append("}\n");
+		Expected e1 = new Expected("Extract to method", buf.toString(), JavaCodeActionKind.REFACTOR_EXTRACT_METHOD);
+
+		assertCodeActions(cu, e1);
+	}
+
+	@Test
+	public void testExtractMethodInferNameNoVarSelected() throws Exception {
+		IPackageFragment pack1 = fSourceFolder.createPackageFragment("test1", false, null);
+
+		StringBuilder buf = new StringBuilder();
+		buf.append("package test1;\n");
+		buf.append("\n");
+		buf.append("public class E {\n");
+		buf.append("    public static void main(String[] args) {\n");
+		buf.append("        int numArgs = /*[*/args == null ? 0 : args.length/*]*/;\n");
+		buf.append("        System.out.println(numArgs);\n");
+		buf.append("    }\n");
+		buf.append("\n");
+		buf.append("}\n");
+
+		ICompilationUnit cu = pack1.createCompilationUnit("E.java", buf.toString(), false, null);
+
+		buf = new StringBuilder();
+		buf.append("package test1;\n");
+		buf.append("\n");
+		buf.append("public class E {\n");
+		buf.append("    public static void main(String[] args) {\n");
+		buf.append("        int numArgs = getNumArgs(args);\n");
+		buf.append("        System.out.println(numArgs);\n");
+		buf.append("    }\n");
+		buf.append("\n");
+		buf.append("    private static int getNumArgs(String[] args) {\n");
+		buf.append("        return /*[*/args == null ? 0 : args.length/*]*/;\n");
+		buf.append("    }\n");
+		buf.append("\n");
+		buf.append("}\n");
+
+		Expected e1 = new Expected("Extract to method", buf.toString(), JavaCodeActionKind.REFACTOR_EXTRACT_METHOD);
+
+		assertCodeActions(cu, e1);
+	}
+
+	@Test
+	public void testExtractMethodInferNameNoVarSelectedAssign() throws Exception {
+		IPackageFragment pack1 = fSourceFolder.createPackageFragment("test1", false, null);
+
+		StringBuilder buf = new StringBuilder();
+		buf.append("package test1;\n");
+		buf.append("\n");
+		buf.append("public class E {\n");
+		buf.append("    public static void main(String[] args) {\n");
+		buf.append("        int numArgs;\n");
+		buf.append("        numArgs = /*[*/args == null ? 0 : args.length/*]*/;\n");
+		buf.append("        System.out.println(numArgs);\n");
+		buf.append("    }\n");
+		buf.append("\n");
+		buf.append("}\n");
+
+		ICompilationUnit cu = pack1.createCompilationUnit("E.java", buf.toString(), false, null);
+
+		buf = new StringBuilder();
+		buf.append("package test1;\n");
+		buf.append("\n");
+		buf.append("public class E {\n");
+		buf.append("    public static void main(String[] args) {\n");
+		buf.append("        int numArgs;\n");
+		buf.append("        numArgs = getNumArgs(args);\n");
+		buf.append("        System.out.println(numArgs);\n");
+		buf.append("    }\n");
+		buf.append("\n");
+		buf.append("    private static int getNumArgs(String[] args) {\n");
+		buf.append("        return /*[*/args == null ? 0 : args.length/*]*/;\n");
+		buf.append("    }\n");
+		buf.append("\n");
+		buf.append("}\n");
+
+		Expected e1 = new Expected("Extract to method", buf.toString(), JavaCodeActionKind.REFACTOR_EXTRACT_METHOD);
+
+		assertCodeActions(cu, e1);
 	}
 
 }

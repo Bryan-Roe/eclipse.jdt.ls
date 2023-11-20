@@ -57,11 +57,14 @@ import org.eclipse.jdt.internal.core.manipulation.util.BasicElementLabels;
 import org.eclipse.jdt.internal.core.refactoring.descriptors.RefactoringSignatureDescriptorFactory;
 import org.eclipse.jdt.internal.corext.codemanipulation.GetterSetterUtil;
 import org.eclipse.jdt.internal.corext.refactoring.Checks;
+import org.eclipse.jdt.internal.corext.refactoring.CollectingSearchRequestor;
+import org.eclipse.jdt.internal.corext.refactoring.CuCollectingSearchRequestor;
 import org.eclipse.jdt.internal.corext.refactoring.JDTRefactoringDescriptorComment;
 import org.eclipse.jdt.internal.corext.refactoring.JavaRefactoringArguments;
 import org.eclipse.jdt.internal.corext.refactoring.JavaRefactoringDescriptorUtil;
 import org.eclipse.jdt.internal.corext.refactoring.RefactoringCoreMessages;
 import org.eclipse.jdt.internal.corext.refactoring.RefactoringScopeFactory;
+import org.eclipse.jdt.internal.corext.refactoring.RefactoringSearchEngine;
 import org.eclipse.jdt.internal.corext.refactoring.SearchResultGroup;
 import org.eclipse.jdt.internal.corext.refactoring.base.ReferencesInBinaryContext;
 import org.eclipse.jdt.internal.corext.refactoring.changes.DynamicValidationRefactoringChange;
@@ -70,6 +73,7 @@ import org.eclipse.jdt.internal.corext.refactoring.delegates.DelegateCreator;
 import org.eclipse.jdt.internal.corext.refactoring.delegates.DelegateFieldCreator;
 import org.eclipse.jdt.internal.corext.refactoring.delegates.DelegateMethodCreator;
 import org.eclipse.jdt.internal.corext.refactoring.participants.JavaProcessors;
+import org.eclipse.jdt.internal.corext.refactoring.rename.MethodChecks;
 import org.eclipse.jdt.internal.corext.refactoring.rename.RenameAnalyzeUtil;
 import org.eclipse.jdt.internal.corext.refactoring.structure.ASTNodeSearchUtil;
 import org.eclipse.jdt.internal.corext.refactoring.structure.CompilationUnitRewrite;
@@ -85,10 +89,8 @@ import org.eclipse.jdt.internal.corext.util.JdtFlags;
 import org.eclipse.jdt.internal.corext.util.Messages;
 import org.eclipse.jdt.internal.corext.util.SearchUtils;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
-import org.eclipse.jdt.ls.core.internal.corext.refactoring.CollectingSearchRequestor;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringAvailabilityTester;
-import org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringSearchEngine;
-import org.eclipse.jdt.ls.core.internal.hover.JavaElementLabels;
+import org.eclipse.jdt.internal.core.manipulation.JavaElementLabelsCore;
 import org.eclipse.ltk.core.refactoring.Change;
 import org.eclipse.ltk.core.refactoring.GroupCategory;
 import org.eclipse.ltk.core.refactoring.GroupCategorySet;
@@ -291,7 +293,7 @@ public class RenameFieldProcessor extends JavaRenameProcessor implements IRefere
 	}
 
 	private String getDeclaringTypeLabel() {
-		return JavaElementLabels.getElementLabel(fField.getDeclaringType(), JavaElementLabels.ALL_DEFAULT);
+		return JavaElementLabelsCore.getElementLabel(fField.getDeclaringType(), JavaElementLabelsCore.ALL_DEFAULT);
 	}
 
 	@Override
@@ -650,6 +652,10 @@ public class RenameFieldProcessor extends JavaRenameProcessor implements IRefere
 		}
 		IJavaSearchScope scope= SearchEngine.createHierarchyScope(fField.getDeclaringType());
 		SearchResultGroup[] groupDeclarations= RefactoringSearchEngine.search(pattern, scope, pm, result);
+		if (groupDeclarations.length == 0) {
+			// https://github.com/redhat-developer/vscode-java/issues/2805
+			return result;
+		}
 		Assert.isTrue(groupDeclarations.length > 0);
 		if (groupDeclarations.length != 1){
 			String message= Messages.format(RefactoringCoreMessages.RenameFieldRefactoring_overridden,
@@ -819,7 +825,7 @@ public class RenameFieldProcessor extends JavaRenameProcessor implements IRefere
 			JavaLanguageServerPlugin.logException(exception);
 		}
 		final String description= Messages.format(RefactoringCoreMessages.RenameFieldRefactoring_descriptor_description_short, BasicElementLabels.getJavaElementName(fField.getElementName()));
-		final String header= Messages.format(RefactoringCoreMessages.RenameFieldProcessor_descriptor_description, new String[] { BasicElementLabels.getJavaElementName(fField.getElementName()), JavaElementLabels.getElementLabel(fField.getParent(), JavaElementLabels.ALL_FULLY_QUALIFIED), getNewElementName()});
+		final String header= Messages.format(RefactoringCoreMessages.RenameFieldProcessor_descriptor_description, new String[] { BasicElementLabels.getJavaElementName(fField.getElementName()), JavaElementLabelsCore.getElementLabel(fField.getParent(), JavaElementLabelsCore.ALL_FULLY_QUALIFIED), getNewElementName()});
 		final JDTRefactoringDescriptorComment comment= new JDTRefactoringDescriptorComment(project, this, header);
 		if (fRenameGetter) {
 			comment.addSetting(RefactoringCoreMessages.RenameFieldRefactoring_setting_rename_getter);

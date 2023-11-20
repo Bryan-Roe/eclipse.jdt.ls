@@ -20,11 +20,13 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.Map.Entry;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -69,8 +71,10 @@ import org.eclipse.jdt.ls.core.internal.EventNotification;
 import org.eclipse.jdt.ls.core.internal.EventType;
 import org.eclipse.jdt.ls.core.internal.IConstants;
 import org.eclipse.jdt.ls.core.internal.IProjectImporter;
+import org.eclipse.jdt.ls.core.internal.JDTEnvironmentUtils;
 import org.eclipse.jdt.ls.core.internal.JavaClientConnection.JavaLanguageClient;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
+import org.eclipse.jdt.ls.core.internal.JobHelpers;
 import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.ResourceUtils;
 import org.eclipse.jdt.ls.core.internal.ServiceStatus;
@@ -85,6 +89,7 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 	public static final String PROJECTS_IMPORTED = "__PROJECTS_IMPORTED__";
 	private static final String CORE_RESOURCES_MATCHER_ID = "org.eclipse.core.resources.regexFilterMatcher";
 	public static final String CREATED_BY_JAVA_LANGUAGE_SERVER = "__CREATED_BY_JAVA_LANGUAGE_SERVER__";
+	public static final String BUILD_FILE_MARKER_TYPE = "org.eclipse.jdt.ls.buildFileMarker";
 	private static final int JDTLS_FILTER_TYPE = IResourceFilterDescription.EXCLUDE_ALL | IResourceFilterDescription.INHERITABLE | IResourceFilterDescription.FILES | IResourceFilterDescription.FOLDERS;
 
 	private PreferenceManager preferenceManager;
@@ -100,27 +105,28 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 
 	@Override
 	public void initializeProjects(final Collection<IPath> rootPaths, IProgressMonitor monitor) throws CoreException, OperationCanceledException {
-		SubMonitor subMonitor = SubMonitor.convert(monitor, 100);
-		cleanInvalidProjects(rootPaths, subMonitor.split(20));
-		createJavaProject(getDefaultProject(), subMonitor.split(10));
-		cleanupResources(getDefaultProject());
-		Collection<IPath> projectConfigurations = preferenceManager.getPreferences().getProjectConfigurations();
-		if (projectConfigurations == null) {
-			// old way to import project
-			importProjects(rootPaths, subMonitor.split(70));
-		} else {
-			importProjectsFromConfigurationFiles(rootPaths, projectConfigurations, monitor);
+		if (!preferenceManager.getClientPreferences().skipProjectConfiguration()) {
+			SubMonitor subMonitor = SubMonitor.convert(monitor, 100);
+			cleanInvalidProjects(rootPaths, subMonitor.split(20));
+			createJavaProject(getDefaultProject(), subMonitor.split(10));
+			cleanupResources(getDefaultProject());
+			Collection<IPath> projectConfigurations = preferenceManager.getPreferences().getProjectConfigurations();
+			if (projectConfigurations == null) {
+				// old way to import project
+				importProjects(rootPaths, subMonitor.split(70));
+			} else {
+				importProjectsFromConfigurationFiles(rootPaths, projectConfigurations, monitor);
+			}
+			updateEncoding(monitor);
+			reportProjectsStatus();
+			subMonitor.done();
 		}
-		updateEncoding(monitor);
-		reportProjectsStatus();
-		subMonitor.done();
 	}
 
 	private void updateEncoding(IProgressMonitor monitor) throws CoreException {
 		if (preferenceManager != null && ProjectEncodingMode.SETDEFAULT.equals(preferenceManager.getPreferences().getProjectEncoding())) {
 			IWorkspace workspace = ResourcesPlugin.getWorkspace();
-			if (workspace instanceof Workspace) {
-				Workspace ws = (Workspace) workspace;
+			if (workspace instanceof Workspace ws) {
 				CharsetManager charsetManager = ws.getCharsetManager();
 				String encoding = ResourcesPlugin.getEncoding();
 				for (IProject project : ProjectUtils.getAllProjects()) {
@@ -154,6 +160,7 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 			} catch (CoreException e) {
 				// if a rootPath import failed, keep importing the next rootPath
 				importStatusCollection.add(e.getStatus());
+				JavaLanguageServerPlugin.logException("Failed to import projects", e);
 			}
 		}
 		if (!importStatusCollection.isOK()) {
@@ -176,6 +183,7 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 			} catch (CoreException e) {
 				// if a rootPath import failed, keep importing the next rootPath
 				importStatusCollection.add(e.getStatus());
+				JavaLanguageServerPlugin.logException("Failed to import projects", e);
 			}
 		}
 		if (!importStatusCollection.isOK()) {
@@ -198,6 +206,7 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 				List<URI> projectUris = Arrays.stream(getWorkspaceRoot().getProjects())
 					.map(project -> ProjectUtils.getProjectRealFolder(project).toFile().toURI())
 					.collect(Collectors.toList());
+
 				EventNotification notification = new EventNotification().withType(EventType.ProjectsImported).withData(projectUris);
 				client.sendEventNotification(notification);
 				reportProjectsStatus();
@@ -360,7 +369,9 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 
 		IJavaProject javaProject = JavaCore.create(project);
 		configureJVMSettings(javaProject);
-
+		if (!JDTEnvironmentUtils.isSyntaxServer()) {
+			JobHelpers.waitForAutoBuildJobs(JobHelpers.MAX_TIME_MILLIS);
+		}
 		//Add build output folder
 		if (StringUtils.isNotBlank(bin)) {
 			IFolder output = project.getFolder(bin);
@@ -421,6 +432,7 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 						registerWatchers(true);
 					}
 					updateEncoding(monitor);
+					project.deleteMarkers(BUILD_FILE_MARKER_TYPE, false, IResource.DEPTH_ONE);
 					long elapsed = System.currentTimeMillis() - start;
 					JavaLanguageServerPlugin.logInfo("Updated " + projectName + " in " + elapsed + " ms");
 				} catch (Exception e) {
@@ -437,11 +449,35 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 	}
 
 	@Override
+	public Job updateProjects(Collection<IProject> projects, boolean force) {
+		JavaLanguageServerPlugin.sendStatus(ServiceStatus.Message, "Updating project configurations...");
+		UpdateProjectsWorkspaceJob job = new UpdateProjectsWorkspaceJob(projects, force);
+		job.schedule();
+		return job;
+	}
+
+	@Override
 	public Optional<IBuildSupport> getBuildSupport(IProject project) {
 		return buildSupports().filter(bs -> bs.applies(project)).findFirst();
 	}
 
-	private Stream<IBuildSupport> buildSupports() {
+	/**
+	 * Check if the build support for the specified project depends on the default VM.
+	 */
+	public boolean useDefaultVM(IProject project, IVMInstall defaultVM) {
+		if (project == null) {
+			return false;
+		}
+
+		IBuildSupport buildSupport = getBuildSupport(project).orElse(null);
+		if (buildSupport != null) {
+			return buildSupport.useDefaultVM(project, defaultVM);
+		}
+
+		return false;
+	}
+
+	protected Stream<IBuildSupport> buildSupports() {
 		return Stream.of(new EclipseBuildSupport());
 	}
 
@@ -540,6 +576,29 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 		return changed;
 	}
 
+	public static Runnable interruptAutoBuild() throws CoreException {
+		IWorkspace workspace = ResourcesPlugin.getWorkspace();
+		if (workspace instanceof Workspace ws) {
+			ws.getBuildManager().interrupt();
+			return () -> {
+			};
+		} else {
+			boolean changed = setAutoBuilding(false);
+			if (changed) {
+				return () -> {
+					try {
+						setAutoBuilding(true);
+					} catch (CoreException e) {
+						// ignore
+					}
+				};
+			} else {
+				return () -> {
+				};
+			}
+		}
+	}
+
 	public void configureFilters(IProgressMonitor monitor) throws CoreException {
 		List<String> resourceFilters = preferenceManager.getPreferences().getResourceFilters();
 		if (resourceFilters != null && !resourceFilters.isEmpty()) {
@@ -554,7 +613,7 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 			List<IResourceFilterDescription> filters = Stream.of(project.getFilters())
 					.filter(f -> {
 						FileInfoMatcherDescription matcher = f.getFileInfoMatcherDescription();
-								return CORE_RESOURCES_MATCHER_ID.equals(matcher.getId()) && (matcher.getArguments() instanceof String) && ((String) matcher.getArguments()).contains(CREATED_BY_JAVA_LANGUAGE_SERVER);
+						return CORE_RESOURCES_MATCHER_ID.equals(matcher.getId()) && matcher.getArguments() instanceof String args && args.contains(CREATED_BY_JAVA_LANGUAGE_SERVER);
 					})
 					.collect(Collectors.toList());
 			boolean filterExists = false;
@@ -583,4 +642,96 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 		}
 	}
 
+	class UpdateProjectsWorkspaceJob extends WorkspaceJob {
+
+		private final Collection<IProject> projects;
+		private final boolean force;
+
+		public UpdateProjectsWorkspaceJob(Collection<IProject> projects, boolean force) {
+			super("Updating project configurations");
+			this.projects = projects;
+			this.force = force;
+		}
+
+		@Override
+		public boolean belongsTo(Object family) {
+			return IConstants.UPDATE_PROJECT_FAMILY.equals(family) || IConstants.JOBS_FAMILY.equals(family);
+		}
+
+		@Override
+		public IStatus runInWorkspace(IProgressMonitor monitor) {
+			long start = System.currentTimeMillis();
+			MultiStatus status = new MultiStatus(IConstants.PLUGIN_ID, 0, "Update project configurations");
+			for (Entry<IBuildSupport, List<IProject>> entry : groupByBuildSupport(projects).entrySet()) {
+				IStatus onWillUpdateStatus = onWillConfigurationUpdate(entry.getKey(),
+						entry.getValue(), monitor);
+				
+				// if onWillUpdate() failed, skip updating the projects.
+				if (!onWillUpdateStatus.isOK()) {
+					status.add(onWillUpdateStatus);
+					continue;
+				}
+
+				for (IProject project : entry.getValue()) {
+					if (monitor.isCanceled()) {
+						return Status.CANCEL_STATUS;
+					}
+					updateProject(entry.getKey(), project, force, status, monitor);
+				}
+			}
+
+			onDidConfigurationUpdated(status, monitor);
+			long elapsed = System.currentTimeMillis() - start;
+			JavaLanguageServerPlugin.logInfo("Projects updated in " + elapsed + " ms");
+			return status;
+		}
+
+		private Map<IBuildSupport, List<IProject>> groupByBuildSupport(Collection<IProject> projects) {
+			Map<IBuildSupport, List<IProject>> groupByBuildSupport = new HashMap<>();
+			List<IBuildSupport> buildSupports = buildSupports().toList();
+			for (IProject project : projects) {
+				Optional<IBuildSupport> buildSupport = buildSupports.stream()
+						.filter(bs -> bs.applies(project)).findFirst();
+				if (buildSupport.isPresent()) {
+					IBuildSupport bs = buildSupport.get();
+					groupByBuildSupport.computeIfAbsent(bs, k -> new ArrayList<>()).add(project);
+				}
+			}
+			return groupByBuildSupport;
+		}
+
+		private IStatus onWillConfigurationUpdate(IBuildSupport buildSupport, Collection<IProject> projects,
+				IProgressMonitor monitor) {
+			try {
+				buildSupport.onWillUpdate(projects, monitor);
+				return Status.OK_STATUS;
+			} catch (CoreException e) {
+				JavaLanguageServerPlugin.log(e);
+				return StatusFactory.newErrorStatus("Failed to prepare update from " + buildSupport.buildToolName(), e);
+			}
+		}
+
+		private void updateProject(IBuildSupport buildSupport, IProject project, boolean force,
+				MultiStatus status, IProgressMonitor monitor) {
+			try {
+				project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
+				buildSupport.update(project, force, monitor);
+				project.deleteMarkers(BUILD_FILE_MARKER_TYPE, false, IResource.DEPTH_ONE);
+			} catch (CoreException e) {
+				JavaLanguageServerPlugin.log(e);
+				status.add(StatusFactory.newErrorStatus("Error updating " + project.getName(), e));
+			}
+		}
+
+		private void onDidConfigurationUpdated(MultiStatus status, IProgressMonitor monitor) {
+			try {
+				registerWatchers(true);
+				updateEncoding(monitor);
+				reportProjectsStatus();
+			} catch (CoreException e) {
+				JavaLanguageServerPlugin.log(e);
+				status.add(StatusFactory.newErrorStatus("Error updating encoding", e));
+			}
+		}
+	}
 }

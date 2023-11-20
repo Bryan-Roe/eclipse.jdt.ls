@@ -19,15 +19,15 @@ import static org.eclipse.jdt.internal.corext.template.java.SignatureUtil.getLow
 import java.io.Reader;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import org.eclipse.core.runtime.IProgressMonitor;
-import org.eclipse.jdt.core.CompletionContext;
+import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.jdt.core.CompletionProposal;
 import org.eclipse.jdt.core.CompletionRequestor;
 import org.eclipse.jdt.core.Flags;
@@ -57,10 +57,9 @@ import com.google.common.util.concurrent.UncheckedTimeoutException;
 
 public final class SignatureHelpRequestor extends CompletionRequestor {
 
-	private List<CompletionProposal> proposals = new ArrayList<>();
+	private Map<String, CompletionProposal> proposals = new LinkedHashMap<>();
 	private List<CompletionProposal> typeProposals = new ArrayList<>();
 	private final ICompilationUnit unit;
-	private CompletionProposalDescriptionProvider descriptionProvider;
 	private Map<SignatureInformation, CompletionProposal> infoProposals;
 	private boolean acceptType = false;
 	private String methodName;
@@ -85,9 +84,8 @@ public final class SignatureHelpRequestor extends CompletionRequestor {
 		SignatureHelp signatureHelp = new SignatureHelp();
 
 		List<SignatureInformation> infos = new ArrayList<>();
-		for (int i = 0; i < proposals.size(); i++) {
+		for (CompletionProposal proposal : proposals.values()) {
 			if (!monitor.isCanceled()) {
-				CompletionProposal proposal = proposals.get(i);
 				if (proposal.getKind() != CompletionProposal.METHOD_REF) {
 					typeProposals.add(proposal);
 					continue;
@@ -130,33 +128,26 @@ public final class SignatureHelpRequestor extends CompletionRequestor {
 					for (String typeName : this.declaringTypeNames) {
 						String declaringTypeSimpleName = Signature.getSimpleName(typeName);
 						if (Objects.equals(proposalTypeSimpleName, declaringTypeSimpleName)) {
-							proposals.add(proposal);
+							proposals.putIfAbsent(String.valueOf(proposal.getSignature()), proposal);
 							return;
 						}
 					}
 					return;
 				}
 			}
-			proposals.add(proposal);
+			proposals.putIfAbsent(String.valueOf(proposal.getSignature()), proposal);
 		}
-	}
-
-	@Override
-	public void acceptContext(CompletionContext context) {
-		super.acceptContext(context);
-		this.descriptionProvider = new CompletionProposalDescriptionProvider(context);
 	}
 
 	public SignatureInformation toSignatureInformation(CompletionProposal methodProposal) {
 		SignatureInformation $ = new SignatureInformation();
-		StringBuilder description = descriptionProvider.createMethodProposalDescription(methodProposal);
+		StringBuilder description = CompletionProposalDescriptionProvider.createMethodProposalDescription(methodProposal);
 		$.setLabel(description.toString());
 		if (isDescriptionEnabled) {
 			$.setDocumentation(this.computeJavaDoc(methodProposal));
 		}
 
 		char[] signature = SignatureUtil.fix83600(methodProposal.getSignature());
-		// todo: cannot get parameter names for record class
 		char[][] parameterNames = methodProposal.findParameterNames(null);
 		char[][] parameterTypes = Signature.getParameterTypes(signature);
 
@@ -210,12 +201,16 @@ public final class SignatureHelpRequestor extends CompletionRequestor {
 
 	public String computeJavaDoc(CompletionProposal proposal) {
 		try {
-			IType type = unit.getJavaProject().findType(SignatureUtil.stripSignatureToFQN(String.valueOf(proposal.getDeclarationSignature())));
+			String fullyQualifiedName = SignatureUtil.stripSignatureToFQN(String.valueOf(proposal.getDeclarationSignature()));
+			IType type = unit.getJavaProject().findType(fullyQualifiedName);
+			if (type == null) {
+				// find secondary types if primary type search is missed.
+				type = unit.getJavaProject().findType(fullyQualifiedName, new NullProgressMonitor());
+			}
 			if (type != null) {
-				if (proposal instanceof InternalCompletionProposal) {
-					Binding binding = ((InternalCompletionProposal) proposal).getBinding();
-					if (binding instanceof MethodBinding) {
-						MethodBinding methodBinding = (MethodBinding) binding;
+				if (proposal instanceof InternalCompletionProposal internalCompletionProposal) {
+					Binding binding = internalCompletionProposal.getBinding();
+					if (binding instanceof MethodBinding methodBinding) {
 						MethodBinding original = methodBinding.original();
 						char[] signature;
 						if (original != binding) {
@@ -235,7 +230,7 @@ public final class SignatureHelpRequestor extends CompletionRequestor {
 							}
 							String javadoc = null;
 							try {
-								javadoc = SimpleTimeLimiter.create(Executors.newCachedThreadPool()).callWithTimeout(() -> {
+								javadoc = SimpleTimeLimiter.create(JavaLanguageServerPlugin.getExecutorService()).callWithTimeout(() -> {
 									Reader reader = JavadocContentAccess.getPlainTextContentReader(method);
 									return reader == null ? null : CharStreams.toString(reader);
 								}, 500, TimeUnit.MILLISECONDS);

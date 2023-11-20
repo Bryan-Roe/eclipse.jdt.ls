@@ -84,7 +84,7 @@ final public class JsonRpcHelpers {
 			try {
 				return document.getLineOffset(line) + column;
 			} catch (BadLocationException e) {
-				JavaLanguageServerPlugin.logException(e.getMessage(), e);
+				JavaLanguageServerPlugin.debugTrace("toOffset: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
 			}
 		}
 		return -1;
@@ -157,7 +157,7 @@ final public class JsonRpcHelpers {
 				int column = offset - document.getLineOffset(line);
 				return new int[] { line, column };
 			} catch (BadLocationException e) {
-				JavaLanguageServerPlugin.logException(e.getMessage(), e);
+				JavaLanguageServerPlugin.debugTrace("toLine: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
 			}
 		}
 		return null;
@@ -175,10 +175,10 @@ final public class JsonRpcHelpers {
 		if (buffer == null) {
 			return null;
 		}
-		if (buffer instanceof IDocument) {
-			return (IDocument) buffer;
-		} else if (buffer instanceof org.eclipse.jdt.ls.core.internal.DocumentAdapter) {
-			IDocument document = ((org.eclipse.jdt.ls.core.internal.DocumentAdapter) buffer).getDocument();
+		if (buffer instanceof IDocument doc) {
+			return doc;
+		} else if (buffer instanceof org.eclipse.jdt.ls.core.internal.DocumentAdapter adapter) {
+			IDocument document = adapter.getDocument();
 			if (document != null) {
 				return document;
 			}

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016-2017 Red Hat Inc. and others.
+ * Copyright (c) 2016-2022 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -12,8 +12,12 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.internal.handlers;
 
-import org.eclipse.core.resources.IFile;
-import org.eclipse.jdt.ls.core.internal.JDTUtils;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+
+import org.eclipse.core.resources.IProject;
+import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
 
@@ -25,17 +29,24 @@ public class ProjectConfigurationUpdateHandler {
 
 	private ProjectsManager projectManager;
 
-	ProjectConfigurationUpdateHandler(ProjectsManager projectManager) {
+	public ProjectConfigurationUpdateHandler(ProjectsManager projectManager) {
 		this.projectManager = projectManager;
 	}
 
-	public void updateConfiguration(TextDocumentIdentifier param) {
-		IFile file = JDTUtils.findFile(param.getUri());
-		if (file == null) {
-			return;
-		}
+	/**
+	 * Update the projects' configurations (build files).
+	 *
+	 * @param identifiers the identifiers which may point to the projects' paths or
+	 * files that belong to some projects in the workspace.
+	 */
+	public void updateConfigurations(List<TextDocumentIdentifier> identifiers) {
+		Collection<IProject> projects = ProjectUtils.getProjectsFromDocumentIdentifiers(identifiers);
 		// most likely the handler is invoked intentionally by the user, that's why
 		// we force the update despite no changes of in build descriptor being made
-		projectManager.updateProject(file.getProject(), true);
+		projectManager.updateProjects(projects, true);
+	}
+
+	public void updateConfiguration(TextDocumentIdentifier param) {
+		updateConfigurations(Arrays.asList(param));
 	}
 }

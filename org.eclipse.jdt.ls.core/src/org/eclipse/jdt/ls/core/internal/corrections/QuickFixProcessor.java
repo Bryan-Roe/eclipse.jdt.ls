@@ -26,8 +26,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import org.eclipse.core.runtime.CoreException;
@@ -36,8 +38,12 @@ import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.core.compiler.IProblem;
 import org.eclipse.jdt.internal.ui.text.correction.IProblemLocationCore;
+import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
+import org.eclipse.jdt.ls.core.internal.corrections.proposals.AddImportCorrectionProposal;
+import org.eclipse.jdt.ls.core.internal.corrections.proposals.CUCorrectionProposal;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.ChangeCorrectionProposal;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.GetterSetterCorrectionSubProcessor;
+import org.eclipse.jdt.ls.core.internal.corrections.proposals.GradleCompatibilityProcessor;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.IProposalRelevance;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.JavadocTagsSubProcessor;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.LocalCorrectionsSubProcessor;
@@ -45,7 +51,10 @@ import org.eclipse.jdt.ls.core.internal.corrections.proposals.ReorgCorrectionsSu
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.ReplaceCorrectionProposal;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.TypeMismatchSubProcessor;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.UnresolvedElementsSubProcessor;
+import org.eclipse.jdt.ls.core.internal.handlers.OrganizeImportsHandler;
 import org.eclipse.jdt.ls.core.internal.text.correction.ModifierCorrectionSubProcessor;
+import org.eclipse.lsp4j.CodeActionKind;
+import org.eclipse.lsp4j.CodeActionParams;
 
 /**
  */
@@ -66,7 +75,7 @@ public class QuickFixProcessor {
 		return start;
 	}
 
-	public List<ChangeCorrectionProposal> getCorrections(IInvocationContext context, IProblemLocationCore[] locations) throws CoreException {
+	public List<ChangeCorrectionProposal> getCorrections(CodeActionParams params, IInvocationContext context, IProblemLocationCore[] locations) throws CoreException {
 		if (locations == null || locations.length == 0) {
 			return Collections.emptyList();
 		}
@@ -75,7 +84,7 @@ public class QuickFixProcessor {
 		for (int i = 0; i < locations.length; i++) {
 			IProblemLocationCore curr = locations[i];
 			if (handledProblems(curr, locations, handledProblems)) {
-				process(context, curr, resultingCollections);
+				process(params, context, curr, resultingCollections);
 			}
 		}
 		return resultingCollections;
@@ -98,7 +107,7 @@ public class QuickFixProcessor {
 		return handledProblems.add(problemId);
 	}
 
-	private void process(IInvocationContext context, IProblemLocationCore problem, Collection<ChangeCorrectionProposal> proposals) throws CoreException {
+	private void process(CodeActionParams params, IInvocationContext context, IProblemLocationCore problem, Collection<ChangeCorrectionProposal> proposals) throws CoreException {
 		int id = problem.getProblemId();
 		if (id == 0) { // no proposals for none-problem locations
 			return;
@@ -211,6 +220,12 @@ public class QuickFixProcessor {
 			case IProblem.SealedMissingInterfaceModifier:
 				ModifierCorrectionSubProcessor.addSealedMissingModifierProposal(context, problem, proposals);
 				break;
+			case IProblem.SealedNotDirectSuperInterface:
+			case IProblem.SealedNotDirectSuperClass:
+				LocalCorrectionsSubProcessor.addSealedAsDirectSuperTypeProposal(context, problem, proposals);
+			case IProblem.SealedSuperClassDoesNotPermit:
+			case IProblem.SealedSuperInterfaceDoesNotPermit:
+				LocalCorrectionsSubProcessor.addTypeAsPermittedSubTypeProposal(context, problem, proposals);
 			case IProblem.StaticMethodRequested:
 			case IProblem.NonStaticFieldFromStaticInvocation:
 			case IProblem.InstanceMethodDuringConstructorInvocation:
@@ -287,10 +302,9 @@ public class QuickFixProcessor {
 			// LocalCorrectionsSubProcessor.addMissingHashCodeProposals(context,
 			// problem, proposals);
 			// break;
-			// case IProblem.MissingValueForAnnotationMember:
-			// LocalCorrectionsSubProcessor.addValueForAnnotationProposals(context,
-			// problem, proposals);
-			// break;
+			case IProblem.MissingValueForAnnotationMember:
+				LocalCorrectionsSubProcessor.addValueForAnnotationProposals(context, problem, proposals);
+				break;
 			// case IProblem.BodyForNativeMethod:
 			// ModifierCorrectionSubProcessor.addNativeMethodProposals(context,
 			// problem, proposals);
@@ -357,7 +371,7 @@ public class QuickFixProcessor {
 			// problem, 10));
 			// break;
 			case IProblem.JavadocMissing:
-				JavadocTagsSubProcessor.getMissingJavadocCommentProposals(context, problem, proposals);
+				JavadocTagsSubProcessor.getMissingJavadocCommentProposals(context, problem.getCoveringNode(context.getASTRoot()), proposals, CodeActionKind.QuickFix);
 				break;
 			case IProblem.JavadocMissingParamTag:
 			case IProblem.JavadocMissingReturnTag:
@@ -539,6 +553,9 @@ public class QuickFixProcessor {
 			case IProblem.PotentiallyUnclosedCloseable:
 				LocalCorrectionsSubProcessor.getTryWithResourceProposals(context, problem, proposals);
 				break;
+			case IProblem.NotAccessibleType:
+				GradleCompatibilityProcessor.getGradleCompatibilityProposals(context, problem, proposals);
+				break;
 			// case IProblem.MissingSynchronizedModifierInInheritedMethod:
 			// ModifierCorrectionSubProcessor.addSynchronizedMethodProposal(context,
 			// problem, proposals);
@@ -664,5 +681,19 @@ public class QuickFixProcessor {
 		// }
 		// ConfigureProblemSeveritySubProcessor.addConfigureProblemSeverityProposal(context,
 		// problem, proposals);
+	}
+
+	public void addAddAllMissingImportsProposal(IInvocationContext context, Collection<ChangeCorrectionProposal> proposals) {
+		if (proposals.size() == 0) {
+			return;
+		}
+		Optional<Integer> minRelevance = proposals.stream().filter(AddImportCorrectionProposal.class::isInstance).map((proposal) -> proposal.getRelevance()).min(Comparator.naturalOrder());
+		if (minRelevance.isPresent()) {
+			CUCorrectionProposal proposal = OrganizeImportsHandler.getOrganizeImportsProposal(CorrectionMessages.UnresolvedElementsSubProcessor_add_allMissing_imports_description, CodeActionKind.QuickFix, context.getCompilationUnit(),
+					minRelevance.get() - 1, context.getASTRoot(), JavaLanguageServerPlugin.getPreferencesManager().getClientPreferences().isAdvancedOrganizeImportsSupported(), true);
+			if (proposal != null) {
+				proposals.add(proposal);
+			}
+		}
 	}
 }

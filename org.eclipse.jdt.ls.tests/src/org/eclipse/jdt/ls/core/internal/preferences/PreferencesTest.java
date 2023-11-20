@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2021 Red Hat Inc. and others.
+ * Copyright (c) 2021, 2023 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -15,6 +15,10 @@ package org.eclipse.jdt.ls.core.internal.preferences;
 
 import static org.junit.Assert.assertEquals;
 
+import java.util.HashMap;
+import java.util.Map;
+
+import org.eclipse.jdt.ls.core.internal.handlers.CompletionGuessMethodArgumentsMode;
 import org.junit.Test;
 
 public class PreferencesTest {
@@ -48,4 +52,18 @@ public class PreferencesTest {
 		preferences.setStaticImportOnDemandThreshold(-1);
 		assertEquals(Preferences.IMPORTS_STATIC_ONDEMANDTHRESHOLD_DEFAULT, preferences.getStaticImportOnDemandThreshold());
 	}
+
+	@Test
+	public void testLegacyCompletionGuessMethodArguments() {
+		Map<String, Object> config = new HashMap<>();
+		Map<String, Object> inJava = new HashMap<>();
+		config.put("java", inJava);
+		Map<String, Object> inCompletion = new HashMap<>();
+		inJava.put("completion", inCompletion);
+		inCompletion.put("guessMethodArguments", Boolean.TRUE);
+
+		Preferences preferences = Preferences.createFrom(config);
+		assertEquals(CompletionGuessMethodArgumentsMode.INSERT_BEST_GUESSED_ARGUMENTS, preferences.getGuessMethodArgumentsMode());
+	}
+
 }

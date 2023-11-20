@@ -47,7 +47,7 @@ import org.eclipse.jdt.core.search.SearchPattern;
 import org.eclipse.jdt.core.search.SearchRequestor;
 import org.eclipse.jdt.internal.core.BinaryMember;
 import org.eclipse.jdt.ls.core.internal.handlers.CompletionResolveHandler;
-import org.eclipse.jdt.ls.core.internal.hover.JavaElementLabels;
+import org.eclipse.jdt.internal.core.manipulation.JavaElementLabelsCore;
 import org.eclipse.jdt.ls.core.internal.javadoc.JavaDocSnippetStringEvaluator;
 import org.eclipse.jdt.ls.core.internal.javadoc.JavadocContentAccess2;
 import org.eclipse.jdt.ls.core.internal.managers.IBuildSupport;
@@ -62,21 +62,21 @@ import com.google.common.io.CharStreams;
 public class HoverInfoProvider {
 
 	private static final long LABEL_FLAGS=
-			JavaElementLabels.ALL_FULLY_QUALIFIED
-			| JavaElementLabels.M_PRE_RETURNTYPE
-			| JavaElementLabels.M_PARAMETER_ANNOTATIONS
-			| JavaElementLabels.M_PARAMETER_TYPES
-			| JavaElementLabels.M_PARAMETER_NAMES
-			| JavaElementLabels.M_EXCEPTIONS
-			| JavaElementLabels.F_PRE_TYPE_SIGNATURE
-			| JavaElementLabels.M_PRE_TYPE_PARAMETERS
-			| JavaElementLabels.T_TYPE_PARAMETERS
-			| JavaElementLabels.USE_RESOLVED;
+			JavaElementLabelsCore.ALL_FULLY_QUALIFIED
+			| JavaElementLabelsCore.M_PRE_RETURNTYPE
+			| JavaElementLabelsCore.M_PARAMETER_ANNOTATIONS
+			| JavaElementLabelsCore.M_PARAMETER_TYPES
+			| JavaElementLabelsCore.M_PARAMETER_NAMES
+			| JavaElementLabelsCore.M_EXCEPTIONS
+			| JavaElementLabelsCore.F_PRE_TYPE_SIGNATURE
+			| JavaElementLabelsCore.M_PRE_TYPE_PARAMETERS
+			| JavaElementLabelsCore.T_TYPE_PARAMETERS
+			| JavaElementLabelsCore.USE_RESOLVED;
 
-	private static final long LOCAL_VARIABLE_FLAGS= LABEL_FLAGS & ~JavaElementLabels.F_FULLY_QUALIFIED | JavaElementLabels.F_POST_QUALIFIED;
+	private static final long LOCAL_VARIABLE_FLAGS= LABEL_FLAGS & ~JavaElementLabelsCore.F_FULLY_QUALIFIED | JavaElementLabelsCore.F_POST_QUALIFIED;
 
-	private static final long COMMON_SIGNATURE_FLAGS = LABEL_FLAGS & ~JavaElementLabels.ALL_FULLY_QUALIFIED
-			| JavaElementLabels.T_FULLY_QUALIFIED | JavaElementLabels.M_FULLY_QUALIFIED;
+	private static final long COMMON_SIGNATURE_FLAGS = LABEL_FLAGS & ~JavaElementLabelsCore.ALL_FULLY_QUALIFIED
+			| JavaElementLabelsCore.T_FULLY_QUALIFIED | JavaElementLabelsCore.M_FULLY_QUALIFIED;
 
 	private static final String LANGUAGE_ID = "java";
 
@@ -128,8 +128,8 @@ public class HoverInfoProvider {
 			}
 			if (JDTEnvironmentUtils.isSyntaxServer() || isResolved(curr, monitor)) {
 				IBuffer buffer = curr.getOpenable().getBuffer();
-				if (buffer == null && curr instanceof BinaryMember) {
-					IClassFile classFile = ((BinaryMember) curr).getClassFile();
+				if (buffer == null && curr instanceof BinaryMember binaryMember) {
+					IClassFile classFile = binaryMember.getClassFile();
 					if (classFile != null) {
 						Optional<IBuildSupport> bs = JavaLanguageServerPlugin.getProjectsManager().getBuildSupport(curr.getJavaProject().getProject());
 						if (bs.isPresent()) {
@@ -224,8 +224,7 @@ public class HoverInfoProvider {
 						return;
 					}
 					Object o = match.getElement();
-					if (o instanceof IJavaElement) {
-						IJavaElement element = (IJavaElement) o;
+					if (o instanceof IJavaElement element) {
 						if (element.getElementType() == IJavaElement.TYPE) {
 							res[0] = true;
 							return;
@@ -251,12 +250,11 @@ public class HoverInfoProvider {
 		}
 		String elementLabel = null;
 		if (element instanceof ILocalVariable) {
-			elementLabel = JavaElementLabels.getElementLabel(element, LOCAL_VARIABLE_FLAGS);
+			elementLabel = JavaElementLabelsCore.getElementLabel(element, LOCAL_VARIABLE_FLAGS);
 		} else {
-			elementLabel = JavaElementLabels.getElementLabel(element, COMMON_SIGNATURE_FLAGS);
+			elementLabel = JavaElementLabelsCore.getElementLabel(element, COMMON_SIGNATURE_FLAGS);
 		}
-		if (element instanceof IField) {
-			IField field = (IField) element;
+		if (element instanceof IField field) {
 			IRegion region = null;
 			try {
 				ISourceRange nameRange = JDTUtils.getNameRange(field);
@@ -297,10 +295,10 @@ public class HoverInfoProvider {
 	public static MarkedString computeJavadoc(IJavaElement element) throws CoreException {
 		IMember member = null;
 		String result = null;
-		if (element instanceof ITypeParameter) {
-			member= ((ITypeParameter) element).getDeclaringMember();
-		} else if (element instanceof IMember) {
-			member= (IMember) element;
+		if (element instanceof ITypeParameter typeParameter) {
+			member = typeParameter.getDeclaringMember();
+		} else if (element instanceof IMember memberElement) {
+			member = memberElement;
 		} else if (element instanceof IPackageFragment) {
 			Reader r = JavadocContentAccess2.getMarkdownContentReader(element);
 			if (r != null) {
@@ -312,8 +310,8 @@ public class HoverInfoProvider {
 			if (r != null) {
 				result = getString(r);
 			}
-			if (member instanceof IMethod) {
-				String defaultValue = getDefaultValue((IMethod) member);
+			if (member instanceof IMethod method) {
+				String defaultValue = getDefaultValue(method);
 				if (defaultValue != null) {
 					if (JavaLanguageServerPlugin.getPreferencesManager().getClientPreferences().isSupportsCompletionDocumentationMarkdown()) {
 						result = (result == null ? CompletionResolveHandler.EMPTY_STRING : result) + "\n" + CompletionResolveHandler.DEFAULT + defaultValue;

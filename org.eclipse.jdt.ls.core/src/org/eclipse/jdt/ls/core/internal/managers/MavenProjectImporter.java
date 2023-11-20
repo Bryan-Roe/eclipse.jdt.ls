@@ -47,15 +47,18 @@ import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.m2e.core.MavenPlugin;
+import org.eclipse.m2e.core.embedder.IMaven;
 import org.eclipse.m2e.core.embedder.MavenModelManager;
 import org.eclipse.m2e.core.internal.IMavenConstants;
 import org.eclipse.m2e.core.internal.preferences.MavenConfigurationImpl;
+import org.eclipse.m2e.core.lifecyclemapping.model.PluginExecutionAction;
 import org.eclipse.m2e.core.project.IMavenProjectImportResult;
 import org.eclipse.m2e.core.project.IProjectConfigurationManager;
 import org.eclipse.m2e.core.project.LocalProjectScanner;
 import org.eclipse.m2e.core.project.MavenProjectInfo;
 import org.eclipse.m2e.core.project.ProjectImportConfiguration;
 import org.osgi.framework.Bundle;
+import org.osgi.framework.FrameworkUtil;
 
 @SuppressWarnings("restriction")
 public class MavenProjectImporter extends AbstractProjectImporter {
@@ -68,6 +71,7 @@ public class MavenProjectImporter extends AbstractProjectImporter {
 
 	public static final String POM_FILE = "pom.xml";
 
+	private static final String DUPLICATE_ARTIFACT_TEMPLATE = "[groupId]-[artifactId]";
 	private static final String STATE_FILENAME = "workspaceState.ser";
 
 	private Set<MavenProjectInfo> projectInfos = null;
@@ -95,7 +99,7 @@ public class MavenProjectImporter extends AbstractProjectImporter {
 			for (IProject project : ProjectUtils.getAllProjects()) {
 				if (!ProjectUtils.isMavenProject(project)) {
 					String path = project.getLocation().toOSString();
-					mavenDetector.addExclusions(path);
+					mavenDetector.addExclusions(path.replace("\\", "\\\\"));
 				}
 			}
 			directories = mavenDetector.scan(monitor);
@@ -157,6 +161,8 @@ public class MavenProjectImporter extends AbstractProjectImporter {
 		MavenConfigurationImpl configurationImpl = (MavenConfigurationImpl)MavenPlugin.getMavenConfiguration();
 		configurationImpl.setDownloadSources(JavaLanguageServerPlugin.getPreferencesManager().getPreferences().isMavenDownloadSources());
 		configurationImpl.setNotCoveredMojoExecutionSeverity(JavaLanguageServerPlugin.getPreferencesManager().getPreferences().getMavenNotCoveredPluginExecutionSeverity());
+		PluginExecutionAction action = PluginExecutionAction.valueOf(JavaLanguageServerPlugin.getPreferencesManager().getPreferences().getMavenDefaultMojoExecutionAction());
+		configurationImpl.setDefaultMojoExecutionAction(action);
 		SubMonitor subMonitor = SubMonitor.convert(monitor, 105);
 		subMonitor.setTaskName(IMPORTING_MAVEN_PROJECTS);
 		Set<MavenProjectInfo> files = getMavenProjectInfo(subMonitor.split(5));
@@ -164,6 +170,7 @@ public class MavenProjectImporter extends AbstractProjectImporter {
 		Collection<IProject> projects = new LinkedHashSet<>();
 		Collection<MavenProjectInfo> toImport = new LinkedHashSet<>();
 		long lastWorkspaceStateSaved = getLastWorkspaceStateModified();
+		Set<String> artifactIds = new LinkedHashSet<>();
 		//Separate existing projects from new ones
 		for (MavenProjectInfo projectInfo : files) {
 			File pom = projectInfo.getPomFile();
@@ -182,6 +189,7 @@ public class MavenProjectImporter extends AbstractProjectImporter {
 			if (container == null) {
 				digestStore.updateDigest(pom.toPath());
 				toImport.add(projectInfo);
+				artifactIds.add(projectInfo.getModel().getArtifactId());
 			} else {
 				IProject project = container.getProject();
 				boolean valid = !ProjectUtils.isJavaProject(project) || project.getFile(IJavaProject.CLASSPATH_FILE_NAME).exists();
@@ -193,10 +201,17 @@ public class MavenProjectImporter extends AbstractProjectImporter {
 					// need to delete project due to m2e failing to create if linked and not the same name
 					project.delete(IProject.FORCE | IProject.NEVER_DELETE_PROJECT_CONTENT, subMonitor.split(5));
 					toImport.add(projectInfo);
+					artifactIds.add(projectInfo.getModel().getArtifactId());
 				}
 			}
+
 		}
 		if (!toImport.isEmpty()) {
+			ProjectImportConfiguration importConfig = new ProjectImportConfiguration();
+			if (toImport.size() > artifactIds.size()) {
+				// Ensure project name is unique when same artifactId
+				importConfig.setProjectNameTemplate(DUPLICATE_ARTIFACT_TEMPLATE);
+			}
 			if (toImport.size() > MAX_PROJECTS_TO_IMPORT && Runtime.getRuntime().maxMemory() <= MAX_MEMORY) {
 				JavaLanguageServerPlugin.logInfo("Projects size:" + toImport.size());
 				Iterator<MavenProjectInfo> iter = toImport.iterator();
@@ -211,7 +226,6 @@ public class MavenProjectImporter extends AbstractProjectImporter {
 					while (i++ < MAX_PROJECTS_TO_IMPORT && iter.hasNext()) {
 						importPartial.add(iter.next());
 					}
-					ProjectImportConfiguration importConfig = new ProjectImportConfiguration();
 					List<IMavenProjectImportResult> result = configurationManager.importProjects(importPartial, importConfig, monitor2.split(MAX_PROJECTS_TO_IMPORT));
 					results.addAll(result);
 					monitor2.setWorkRemaining(toImport.size() * 2 - it * MAX_PROJECTS_TO_IMPORT);
@@ -224,7 +238,6 @@ public class MavenProjectImporter extends AbstractProjectImporter {
 				updateProjects(imported, lastWorkspaceStateSaved, monitor2.split(projects.size()));
 				monitor2.done();
 			} else {
-				ProjectImportConfiguration importConfig = new ProjectImportConfiguration();
 				configurationManager.importProjects(toImport, importConfig, subMonitor.split(75));
 			}
 		}
@@ -234,7 +247,7 @@ public class MavenProjectImporter extends AbstractProjectImporter {
 	}
 
 	private long getLastWorkspaceStateModified() {
-		Bundle bundle = Platform.getBundle(IMavenConstants.PLUGIN_ID);
+		Bundle bundle = FrameworkUtil.getBundle(IMaven.class);
 		if (bundle != null) {
 			IPath result = Platform.getStateLocation(bundle);
 			File bundleStateLocation = result.toFile();

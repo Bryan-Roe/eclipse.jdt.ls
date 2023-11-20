@@ -24,10 +24,12 @@ import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.jdt.ls.core.internal.WorkspaceHelper;
 import org.eclipse.jdt.ls.core.internal.managers.AbstractInvisibleProjectBasedTest;
 import org.eclipse.lsp4j.Position;
+import org.eclipse.lsp4j.SymbolKind;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
-import org.eclipse.lsp4j.TypeHierarchyDirection;
-import org.eclipse.lsp4j.TypeHierarchyItem;
-import org.eclipse.lsp4j.TypeHierarchyParams;
+import org.eclipse.lsp4j.legacy.typeHierarchy.ResolveTypeHierarchyItemParams;
+import org.eclipse.lsp4j.legacy.typeHierarchy.TypeHierarchyDirection;
+import org.eclipse.lsp4j.legacy.typeHierarchy.TypeHierarchyItem;
+import org.eclipse.lsp4j.legacy.typeHierarchy.TypeHierarchyParams;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -113,5 +115,67 @@ public class TypeHierarchyCommandTest extends AbstractInvisibleProjectBasedTest 
 				assertEquals(subChild.get(0).getName(), "ReflectionToStringBuilder");
 			}
 		}
+	}
+
+	// https://github.com/redhat-developer/vscode-java/issues/2871
+	@Test
+	public void testMultipleProjects() throws Exception {
+		importProjects("eclipse/gh2871");
+		IProject project = WorkspaceHelper.getProject("project1");
+		IProgressMonitor monitor = new NullProgressMonitor();
+		TypeHierarchyParams params = new TypeHierarchyParams();
+		String uriString = project.getFile("src/org/sample/First.java").getLocationURI().toString();
+		TextDocumentIdentifier identifier = new TextDocumentIdentifier(uriString);
+		Position position = new Position(1, 22);
+		params.setTextDocument(identifier);
+		params.setResolve(1);
+		params.setDirection(TypeHierarchyDirection.Both);
+		params.setPosition(position);
+		TypeHierarchyItem item = fCommand.typeHierarchy(params, monitor);
+		assertNotNull(item);
+		assertEquals(item.getName(), "First");
+		assertNotNull(item.getChildren());
+		assertEquals(item.getChildren().size(), 1);
+		assertEquals(item.getChildren().get(0).getName(), "Second");
+	}
+
+	@Test
+	public void testMethodHierarchy() throws Exception {
+		importProjects("maven/type-hierarchy");
+		IProject project = WorkspaceHelper.getProject("type-hierarchy");
+		String uriString = project.getFile("src/main/java/org/example/Zero.java").getLocationURI().toString();
+		TextDocumentIdentifier identifier = new TextDocumentIdentifier(uriString);
+		Position position = new Position(3, 17); // public void f[o]o()
+		TypeHierarchyParams zeroParams = new TypeHierarchyParams();
+		zeroParams.setTextDocument(identifier);
+		zeroParams.setResolve(1);
+		zeroParams.setDirection(TypeHierarchyDirection.Both);
+		zeroParams.setPosition(position);
+		TypeHierarchyItem zero = fCommand.typeHierarchy(zeroParams, monitor);
+
+		// do not show java.lang.Object if target method isn't from there
+		assertEquals(0, zero.getParents().size());
+
+		assertEquals(SymbolKind.Class, zero.getKind()); // zero
+		assertEquals(SymbolKind.Class, zero.getChildren().get(0).getKind()); // one
+		assertEquals(SymbolKind.Null, zero.getChildren().get(1).getKind()); // two
+
+		ResolveTypeHierarchyItemParams oneParams = new ResolveTypeHierarchyItemParams();
+		oneParams.setItem(zero.getChildren().get(0));
+		oneParams.setDirection(TypeHierarchyDirection.Both);
+		oneParams.setResolve(1);
+		TypeHierarchyItem one = fCommand.resolveTypeHierarchy(oneParams, monitor);
+
+		assertEquals(SymbolKind.Null, one.getChildren().get(1).getKind()); // three
+		assertEquals(SymbolKind.Class, one.getChildren().get(0).getKind()); // four
+
+		ResolveTypeHierarchyItemParams twoParams = new ResolveTypeHierarchyItemParams();
+		twoParams.setItem(zero.getChildren().get(1));
+		twoParams.setDirection(TypeHierarchyDirection.Both);
+		twoParams.setResolve(1);
+		TypeHierarchyItem two = fCommand.resolveTypeHierarchy(twoParams, monitor);
+
+		assertEquals(SymbolKind.Null, two.getChildren().get(0).getKind()); // five
+		assertEquals(SymbolKind.Class, two.getChildren().get(1).getKind()); // six
 	}
 }

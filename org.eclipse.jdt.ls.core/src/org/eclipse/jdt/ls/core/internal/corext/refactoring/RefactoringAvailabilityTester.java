@@ -51,10 +51,10 @@ import org.eclipse.jdt.core.dom.Statement;
 import org.eclipse.jdt.core.dom.StructuralPropertyDescriptor;
 import org.eclipse.jdt.core.dom.SuperMethodInvocation;
 import org.eclipse.jdt.internal.corext.refactoring.Checks;
+import org.eclipse.jdt.internal.corext.refactoring.rename.MethodChecks;
 import org.eclipse.jdt.internal.corext.refactoring.util.JavaElementUtil;
 import org.eclipse.jdt.internal.corext.util.JavaModelUtil;
 import org.eclipse.jdt.internal.corext.util.JdtFlags;
-import org.eclipse.jdt.ls.core.internal.corext.refactoring.rename.MethodChecks;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.reorg.ReorgPolicyFactory;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.reorg.ReorgUtils;
 
@@ -167,7 +167,7 @@ public final class RefactoringAvailabilityTester {
 	}
 
 	public static boolean isChangeSignatureAvailable(final IMethod method) throws JavaModelException {
-		return Checks.isAvailable(method) && !Flags.isAnnotation(method.getDeclaringType().getFlags());
+		return (method != null) && Checks.isAvailable(method) && !Flags.isAnnotation(method.getDeclaringType().getFlags());
 	}
 
 	//	public static boolean isChangeSignatureAvailable(final IStructuredSelection selection) throws JavaModelException {

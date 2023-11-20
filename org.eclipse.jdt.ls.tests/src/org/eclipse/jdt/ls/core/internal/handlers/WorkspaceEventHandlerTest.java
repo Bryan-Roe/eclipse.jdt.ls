@@ -18,7 +18,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
-import java.util.Arrays;
+import java.nio.file.Files;
 import java.util.Collections;
 import java.util.List;
 
@@ -38,7 +38,6 @@ import org.eclipse.jdt.ls.core.internal.JavaClientConnection;
 import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.managers.AbstractProjectsManagerBasedTest;
 import org.eclipse.jdt.ls.core.internal.preferences.ClientPreferences;
-import org.eclipse.lsp4j.DidChangeWatchedFilesParams;
 import org.eclipse.lsp4j.DidOpenTextDocumentParams;
 import org.eclipse.lsp4j.FileChangeType;
 import org.eclipse.lsp4j.FileEvent;
@@ -48,8 +47,6 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
-
-import com.google.common.io.Files;
 
 public class WorkspaceEventHandlerTest extends AbstractProjectsManagerBasedTest {
 	private CoreASTProvider sharedASTProvider;
@@ -94,10 +91,9 @@ public class WorkspaceEventHandlerTest extends AbstractProjectsManagerBasedTest 
 		assertTrue(lastModified > 0);
 		source = source.replace("world", "world2");
 		File javaFile = new File(projectFile, "src/org/sample/Foo.java");
-		FileUtils.writeStringToFile(javaFile, source);
+		Files.writeString(javaFile.toPath(), source);
 		String uri = JDTUtils.toURI(unit);
-		DidChangeWatchedFilesParams params = new DidChangeWatchedFilesParams(Arrays.asList(new FileEvent(uri, FileChangeType.Changed)));
-		new WorkspaceEventsHandler(projectsManager, javaClient, lifeCycleHandler).didChangeWatchedFiles(params);
+		new WorkspaceEventsHandler(projectsManager, javaClient, lifeCycleHandler).handleFileEvents(new FileEvent(uri, FileChangeType.Changed));
 		waitForBackgroundJobs();
 		assertTrue(classFile.lastModified() > lastModified);
 	}
@@ -122,14 +118,13 @@ public class WorkspaceEventHandlerTest extends AbstractProjectsManagerBasedTest 
 		String newUri = oldUri.replace("mypack", "mynewpack");
 		File oldPack = mypack.getResource().getLocation().toFile();
 		File newPack = new File(oldPack.getParent(), "mynewpack");
-		Files.move(oldPack, newPack);
+		Files.move(oldPack.toPath(), newPack.toPath());
 		assertTrue(unit.isWorkingCopy());
-		DidChangeWatchedFilesParams params = new DidChangeWatchedFilesParams(Arrays.asList(
+		new WorkspaceEventsHandler(projectsManager, javaClient, lifeCycleHandler).handleFileEvents(
 			new FileEvent(newUri, FileChangeType.Created),
 			new FileEvent(parentUri, FileChangeType.Changed),
 			new FileEvent(oldUri, FileChangeType.Deleted)
-		));
-		new WorkspaceEventsHandler(projectsManager, javaClient, lifeCycleHandler).didChangeWatchedFiles(params);
+		);
 		assertFalse(unit.isWorkingCopy());
 	}
 
@@ -145,15 +140,12 @@ public class WorkspaceEventHandlerTest extends AbstractProjectsManagerBasedTest 
 		assertTrue(module2.exists());
 
 		clientRequests.clear();
-		DidChangeWatchedFilesParams params = new DidChangeWatchedFilesParams(Arrays.asList(
-			new FileEvent(projectUri, FileChangeType.Deleted)
-		));
-		new WorkspaceEventsHandler(projectsManager, javaClient, lifeCycleHandler).didChangeWatchedFiles(params);
+		new WorkspaceEventsHandler(projectsManager, javaClient, lifeCycleHandler).handleFileEvents(new FileEvent(projectUri, FileChangeType.Deleted));
 		waitForBackgroundJobs();
 		assertFalse(module2.exists());
 
 		List<PublishDiagnosticsParams> diags = getClientRequests("publishDiagnostics");
-		assertEquals(9L, diags.size());
+		assertEquals(7, diags.size());
 		assertEndsWith(diags.get(0).getUri(), "/module2");
 		assertEndsWith(diags.get(1).getUri(), "/multimodule3");
 		assertEndsWith(diags.get(2).getUri(), "/multimodule3/pom.xml");
@@ -165,8 +157,6 @@ public class WorkspaceEventHandlerTest extends AbstractProjectsManagerBasedTest 
 		assertEquals(0L, diags.get(5).getDiagnostics().size());
 		assertEndsWith(diags.get(6).getUri(), "/AppTest.java");
 		assertEquals(0L, diags.get(6).getDiagnostics().size());
-		assertEndsWith(diags.get(7).getUri(), "/multimodule3");
-		assertEndsWith(diags.get(8).getUri(), "/multimodule3/pom.xml");
 	}
 
 	private void assertEndsWith(String target, String suffix) {

@@ -44,20 +44,23 @@ public class FoldingRangeHandlerTest extends AbstractProjectsManagerBasedTest {
 
 	@Test
 	public void testFoldingRanges() throws Exception {
-		testClass("org.apache.commons.lang3.text.WordUtils");
+		List<FoldingRange> foldingRanges = getFoldingRanges("org.apache.commons.lang3.text.WordUtils");
+		assertHasFoldingRange(18, 23, FoldingRangeKind.Imports, foldingRanges);
+		testClassForValidRange("org.apache.commons.lang3.text.WordUtils", foldingRanges);
 	}
 
 	@Test
 	public void testTypes() throws Exception {
 		String className = "org.sample.SimpleFoldingRange";
 		List<FoldingRange> foldingRanges = getFoldingRanges(className);
-		assertTrue(foldingRanges.size() == 7);
+		assertTrue(foldingRanges.size() == 8);
 		assertHasFoldingRange(2, 3, FoldingRangeKind.Imports, foldingRanges);
 		assertHasFoldingRange(5, 7, FoldingRangeKind.Comment, foldingRanges);
-		assertHasFoldingRange(8, 24, null, foldingRanges);
+		assertHasFoldingRange(8, 26, null, foldingRanges);
 		assertHasFoldingRange(10, 14, FoldingRangeKind.Comment, foldingRanges);
-		assertHasFoldingRange(19, 23, null, foldingRanges);
+		assertHasFoldingRange(19, 24, null, foldingRanges);
 		assertHasFoldingRange(20, 22, null, foldingRanges);
+		assertHasFoldingRange(28, 30, FoldingRangeKind.Comment, foldingRanges);
 	}
 
 	@Test
@@ -122,6 +125,35 @@ public class FoldingRangeHandlerTest extends AbstractProjectsManagerBasedTest {
 	}
 
 	@Test
+	public void testNestedSwitchFoldingRanges() throws Exception {
+		String className = "org.sample.NestedSwitchFoldingRange";
+		List<FoldingRange> foldingRanges = getFoldingRanges(className);
+		assertTrue(foldingRanges.size() == 10);
+		assertHasFoldingRange(2, 32, null, foldingRanges);
+		assertHasFoldingRange(11, 31, null, foldingRanges);
+
+		// First switch statement
+		assertHasFoldingRange(16, 30, null, foldingRanges);
+		assertHasFoldingRange(17, 25, null, foldingRanges);
+		assertHasFoldingRange(26, 29, null, foldingRanges);
+
+		// Nested switch statement:
+		assertHasFoldingRange(19, 24, null, foldingRanges);
+		assertHasFoldingRange(20, 21, null, foldingRanges);
+		assertHasFoldingRange(22, 23, null, foldingRanges);
+	}
+
+	// https://github.com/eclipse-jdtls/eclipse.jdt.ls/issues/2865
+	@Test
+	public void testCurlyBracesOwnLine() throws Exception {
+		String className = "org.sample.NestedSwitchFoldingRange";
+		List<FoldingRange> foldingRanges = getFoldingRanges(className);
+		assertTrue(foldingRanges.size() == 10);
+		assertHasFoldingRange(4, 9, null, foldingRanges);
+		assertHasFoldingRange(7, 8, null, foldingRanges);
+	}
+
+	@Test
 	public void testStaticBlockFoldingRange() throws Exception {
 		String className = "org.sample.StaticBlockFoldingRange";
 		List<FoldingRange> foldingRanges = getFoldingRanges(className);
@@ -133,8 +165,7 @@ public class FoldingRangeHandlerTest extends AbstractProjectsManagerBasedTest {
 		assertHasFoldingRange(17, 17, null, foldingRanges);
 	}
 
-	private void testClass(String className) throws CoreException {
-		List<FoldingRange> foldingRanges = getFoldingRanges(className);
+	private void testClassForValidRange(String className, List<FoldingRange> foldingRanges) throws CoreException {
 		for (FoldingRange range : foldingRanges) {
 			assertTrue("Class: " + className + ", FoldingRange:" + range.getKind() + " - invalid location.", isValid(range));
 		}

@@ -13,15 +13,16 @@
 package org.eclipse.jdt.ls.core.internal;
 
 import static org.eclipse.core.resources.IResource.DEPTH_ONE;
-import static org.eclipse.jdt.ls.core.internal.hover.JavaElementLabels.ALL_DEFAULT;
-import static org.eclipse.jdt.ls.core.internal.hover.JavaElementLabels.M_APP_RETURNTYPE;
-import static org.eclipse.jdt.ls.core.internal.hover.JavaElementLabels.ROOT_VARIABLE;
+import static org.eclipse.jdt.internal.core.manipulation.JavaElementLabelsCore.ALL_DEFAULT;
+import static org.eclipse.jdt.internal.core.manipulation.JavaElementLabelsCore.M_APP_RETURNTYPE;
+import static org.eclipse.jdt.internal.core.manipulation.JavaElementLabelsCore.ROOT_VARIABLE;
 
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.FileSystem;
+import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -108,9 +109,13 @@ import org.eclipse.jdt.internal.codeassist.InternalCompletionProposal;
 import org.eclipse.jdt.internal.codeassist.impl.Engine;
 import org.eclipse.jdt.internal.compiler.lookup.Binding;
 import org.eclipse.jdt.internal.compiler.lookup.MethodBinding;
+import org.eclipse.jdt.internal.core.NamedMember;
+import org.eclipse.jdt.internal.core.manipulation.JavaElementLabelComposerCore;
+import org.eclipse.jdt.internal.core.manipulation.JavaElementLabelsCore;
 import org.eclipse.jdt.internal.core.manipulation.search.IOccurrencesFinder.OccurrenceLocation;
 import org.eclipse.jdt.internal.core.manipulation.search.OccurrencesFinder;
 import org.eclipse.jdt.internal.core.util.Util;
+import org.eclipse.jdt.internal.corext.codemanipulation.GetterSetterUtil;
 import org.eclipse.jdt.internal.corext.dom.ASTNodes;
 import org.eclipse.jdt.internal.corext.dom.IASTSharedValues;
 import org.eclipse.jdt.internal.corext.refactoring.structure.ASTNodeSearchUtil;
@@ -122,8 +127,6 @@ import org.eclipse.jdt.launching.JavaRuntime;
 import org.eclipse.jdt.launching.environments.IExecutionEnvironment;
 import org.eclipse.jdt.launching.environments.IExecutionEnvironmentsManager;
 import org.eclipse.jdt.ls.core.internal.handlers.JsonRpcHelpers;
-import org.eclipse.jdt.ls.core.internal.hover.JavaElementLabelComposer;
-import org.eclipse.jdt.ls.core.internal.hover.JavaElementLabels;
 import org.eclipse.jdt.ls.core.internal.javadoc.JavaElementLinks;
 import org.eclipse.jdt.ls.core.internal.managers.ContentProviderManager;
 import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager;
@@ -134,9 +137,6 @@ import org.eclipse.jface.text.IRegion;
 import org.eclipse.lsp4j.Location;
 import org.eclipse.lsp4j.Position;
 import org.eclipse.lsp4j.Range;
-
-import com.google.common.base.Charsets;
-import com.google.common.io.Files;
 
 /**
  * General utilities for working with JDT APIs
@@ -149,6 +149,17 @@ public final class JDTUtils {
 	public static final String PERIOD = ".";
 	public static final String SRC = "src";
 	private static final String JDT_SCHEME = "jdt";
+	private static final long LABEL_FLAGS=
+			JavaElementLabelsCore.ALL_FULLY_QUALIFIED
+			| JavaElementLabelsCore.M_PRE_RETURNTYPE
+			| JavaElementLabelsCore.M_PARAMETER_ANNOTATIONS
+			| JavaElementLabelsCore.M_PARAMETER_TYPES
+			| JavaElementLabelsCore.M_PARAMETER_NAMES
+			| JavaElementLabelsCore.M_EXCEPTIONS
+			| JavaElementLabelsCore.F_PRE_TYPE_SIGNATURE
+			| JavaElementLabelsCore.M_PRE_TYPE_PARAMETERS
+			| JavaElementLabelsCore.T_TYPE_PARAMETERS
+			| JavaElementLabelsCore.USE_RESOLVED;
 	//Code generators known to cause problems
 	private static Set<String> SILENCED_CODEGENS = Collections.singleton("lombok");
 
@@ -234,8 +245,8 @@ public final class JDTUtils {
 				return null;
 			}
 			IJavaElement element = JavaCore.create(resource);
-			if (element instanceof IPackageFragment) {
-				return (IPackageFragment) element;
+			if (element instanceof IPackageFragment pkg) {
+				return pkg;
 			}
 		}
 		return null;
@@ -257,7 +268,21 @@ public final class JDTUtils {
 
 		IProject project = JavaLanguageServerPlugin.getProjectsManager().getDefaultProject();
 		if (project == null || !project.isAccessible()) {
-			return null;
+			String fileName = path.getFileName().toString();
+			if (fileName.endsWith(".java") || fileName.endsWith(".class")) {
+				fileName = fileName.substring(0, fileName.lastIndexOf('.'));
+			}
+			WorkingCopyOwner owner = new WorkingCopyOwner() {
+				@Override
+				public IBuffer createBuffer(ICompilationUnit workingCopy) {
+					return new DocumentAdapter(workingCopy, path);
+				}
+ 			};
+ 			try {
+ 				return owner.newWorkingCopy(fileName, new IClasspathEntry[] { JavaRuntime.getDefaultJREContainerEntry() }, monitor);
+ 			} catch (JavaModelException e) {
+				return null;
+			}
 		}
 		IJavaProject javaProject = JavaCore.create(project);
 
@@ -297,7 +322,7 @@ public final class JDTUtils {
 		try {
 			File file = ResourceUtils.toFile(uri);
 			//FIXME need to determine actual charset from file
-			String content = Files.toString(file, Charsets.UTF_8);
+			String content = Files.readString(file.toPath());
 			if (content.isEmpty() && javaProject != null && ProjectsManager.DEFAULT_PROJECT_NAME.equals(javaProject.getProject().getName())) {
 				java.nio.file.Path path = Paths.get(uri);
 				java.nio.file.Path parent = path;
@@ -341,13 +366,13 @@ public final class JDTUtils {
 	 * Returns with the human readable name of the element. For types with type
 	 * arguments, it is {@code Comparable<T>} instead of {@code Comparable}. First,
 	 * this method tries to retrieve the
-	 * {@link JavaElementLabels#getElementLabel(IJavaElement, long) label} of the
+	 * {@link JavaElementLabelsCore#getElementLabel(IJavaElement, long) label} of the
 	 * element, then falls back to {@link IJavaElement#getElementName() element
 	 * name}. Returns {@code null} if the argument does not have a name.
 	 */
 	public static String getName(IJavaElement element) {
 		Assert.isNotNull(element, "element");
-		String name = JavaElementLabels.getElementLabel(element, ALL_DEFAULT | M_APP_RETURNTYPE | ROOT_VARIABLE);
+		String name = JavaElementLabelsCore.getElementLabel(element, ALL_DEFAULT | M_APP_RETURNTYPE | ROOT_VARIABLE);
 		return name == null ? element.getElementName() : name;
 	}
 
@@ -356,10 +381,10 @@ public final class JDTUtils {
 	 */
 	public static boolean isDeprecated(IJavaElement element) throws JavaModelException {
 		Assert.isNotNull(element, "element");
-		if (element instanceof ITypeRoot) {
-			return Flags.isDeprecated(((ITypeRoot) element).findPrimaryType().getFlags());
-		} else if (element instanceof IMember) {
-			return Flags.isDeprecated(((IMember) element).getFlags());
+		if (element instanceof ITypeRoot typeRoot) {
+			return Flags.isDeprecated(typeRoot.findPrimaryType().getFlags());
+		} else if (element instanceof IMember member) {
+			return Flags.isDeprecated(member.getFlags());
 		}
 		return false;
 	}
@@ -464,7 +489,9 @@ public final class JDTUtils {
 			if (primaryType != null) {
 				String fqn = primaryType.getFullyQualifiedName();
 				IType type = unit.getJavaProject().findType(fqn);
-				return type.getClassFile();
+				if (type != null) {
+					return type.getClassFile();
+				}
 			}
 		}
 		return null;
@@ -497,14 +524,13 @@ public final class JDTUtils {
 		@Override
 		public boolean visit(MethodInvocation node) {
 			if (element.getElementName().equals(node.getName().getIdentifier())) {
-				if (element instanceof IMethod) {
-					IMethod method = (IMethod) element;
+				if (element instanceof IMethod method) {
 					String[] parameters = method.getParameterTypes();
-					List astParameters = node.typeArguments();
+					List<?> astParameters = node.typeArguments();
 					if (parameters.length == astParameters.size()) {
 						int size = astParameters.size();
 						String[] astParameterTypes = new String[size];
-						Iterator iterator = astParameters.iterator();
+						Iterator<?> iterator = astParameters.iterator();
 						for (int i = 0; i < size; i++) {
 							Type parameter = (Type) iterator.next();
 							astParameterTypes[i] = getSignature(parameter);
@@ -526,8 +552,7 @@ public final class JDTUtils {
 		@Override
 		public boolean visit(MethodDeclaration node) {
 			if (element.getElementName().equals(node.getName().getIdentifier())) {
-				if (element instanceof IMethod) {
-					IMethod method = (IMethod) element;
+				if (element instanceof IMethod method) {
 					String[] parameters = method.getParameterTypes();
 					IMethodBinding binding = node.resolveBinding();
 					if (binding != null) {
@@ -700,6 +725,27 @@ public final class JDTUtils {
 			ISourceRange nameRange = type.getRange(element);
 			if (SourceRange.isAvailable(nameRange)) {
 				if (cf == null) {
+					// https://github.com/redhat-developer/vscode-java/issues/2805
+					// 1. Jump to the field of the lombok-annotated class corresponding to the getter and setter method
+					if (element instanceof IMethod method) {
+						if (isGenerated(method)) {
+							IType iType = method.getDeclaringType();
+							if (iType != null) {
+								for (IField field : iType.getFields()) {
+									IMethod getter = GetterSetterUtil.getGetter(field);
+									if (getter != null && JavaModelUtil.isSameMethodSignature(getter.getElementName(), getter.getParameterTypes(), false, method)) {
+										nameRange = field.getNameRange();
+										break;
+									}
+									IMethod setter = GetterSetterUtil.getSetter(field);
+									if (setter != null && JavaModelUtil.isSameMethodSignature(setter.getElementName(), setter.getParameterTypes(), false, method)) {
+										nameRange = field.getNameRange();
+										break;
+									}
+								}
+							}
+						}
+					}
 					return toLocation(unit, nameRange.getOffset(), nameRange.getLength());
 				} else {
 					return toLocation(cf, nameRange.getOffset(), nameRange.getLength());
@@ -713,16 +759,15 @@ public final class JDTUtils {
 
 	public static ISourceRange getNameRange(IJavaElement element) throws JavaModelException {
 		ISourceRange nameRange = null;
-		if (element instanceof IMember) {
-			IMember member = (IMember) element;
+		if (element instanceof IMember member) {
 			nameRange = member.getNameRange();
 			if ((!SourceRange.isAvailable(nameRange))) {
 				nameRange = member.getSourceRange();
 			}
 		} else if (element instanceof ITypeParameter || element instanceof ILocalVariable) {
 			nameRange = ((ISourceReference) element).getNameRange();
-		} else if (element instanceof ISourceReference) {
-			nameRange = ((ISourceReference) element).getSourceRange();
+		} else if (element instanceof ISourceReference sourceRef) {
+			nameRange = sourceRef.getSourceRange();
 		}
 		if (!SourceRange.isAvailable(nameRange) && element.getParent() != null) {
 			nameRange = getNameRange(element.getParent());
@@ -732,13 +777,12 @@ public final class JDTUtils {
 
 	private static ISourceRange getSourceRange(IJavaElement element) throws JavaModelException {
 		ISourceRange sourceRange = null;
-		if (element instanceof IMember) {
-			IMember member = (IMember) element;
+		if (element instanceof IMember member) {
 			sourceRange = member.getSourceRange();
 		} else if (element instanceof ITypeParameter || element instanceof ILocalVariable) {
 			sourceRange = ((ISourceReference) element).getSourceRange();
-		} else if (element instanceof ISourceReference) {
-			sourceRange = ((ISourceReference) element).getSourceRange();
+		} else if (element instanceof ISourceReference sourceRef) {
+			sourceRange = sourceRef.getSourceRange();
 		}
 		if (!SourceRange.isAvailable(sourceRange) && element.getParent() != null) {
 			sourceRange = getSourceRange(element.getParent());
@@ -831,11 +875,11 @@ public final class JDTUtils {
 	}
 
 	public static String toUri(ITypeRoot typeRoot) {
-		if (typeRoot instanceof ICompilationUnit) {
-			return toURI((ICompilationUnit) typeRoot);
+		if (typeRoot instanceof ICompilationUnit unit) {
+			return toURI(unit);
 		}
-		if (typeRoot instanceof IClassFile) {
-			return toUri((IClassFile) typeRoot);
+		if (typeRoot instanceof IClassFile classFile) {
+			return toUri(classFile);
 		}
 		return null;
 	}
@@ -943,7 +987,20 @@ public final class JDTUtils {
 	 * @return
 	 */
 	public static String toURI(ICompilationUnit cu) {
-		return getFileURI(cu.getResource());
+		if (cu.getResource() != null) {
+			String uri = getFileURI(cu.getResource());
+			if (uri != null) {
+				return uri;
+			}
+		}
+		try {
+			if (cu.getBuffer() instanceof DocumentAdapter adapter) {
+				return adapter.filePath.toFile().toURI().toString();
+			}
+		} catch (JavaModelException ex) {
+			JavaLanguageServerPlugin.logException(ex);
+		} 
+		return null;
 	}
 
 	/**
@@ -976,7 +1033,18 @@ public final class JDTUtils {
 			return null;
 		}
 		if (offset > -1) {
-			return unit.codeSelect(offset, 0);
+			IJavaElement[] elements = unit.codeSelect(offset, 0);
+			// a workaround for https://github.com/redhat-developer/vscode-java/issues/3203
+			if (elements == null || elements.length == 0) {
+				IJavaElement element = unit.getElementAt(offset);
+				if (element instanceof NamedMember namedMember) {
+					ISourceRange range = namedMember.getNameRange();
+					if (range.getOffset() <= offset && (range.getOffset() + range.getLength()) >= offset) {
+						return new IJavaElement[] { element };
+					}
+				}
+			}
+			return elements;
 		}
 		return null;
 	}
@@ -1103,9 +1171,9 @@ public final class JDTUtils {
 
 	public static boolean isHiddenGeneratedElement(IJavaElement element) {
 		// generated elements are annotated with @Generated and they need to be filtered out
-		if (element instanceof IAnnotatable) {
+		if (element instanceof IAnnotatable annotable) {
 			try {
-				IAnnotation[] annotations = ((IAnnotatable) element).getAnnotations();
+				IAnnotation[] annotations = annotable.getAnnotations();
 				if (annotations.length != 0) {
 					for (IAnnotation annotation : annotations) {
 						if (isSilencedGeneratedAnnotation(annotation)) {
@@ -1128,8 +1196,8 @@ public final class JDTUtils {
 						&& IMemberValuePair.K_STRING == m.getValueKind()) {
 					if (m.getValue() instanceof String) {
 						return SILENCED_CODEGENS.contains(m.getValue());
-					} else if (m.getValue() instanceof Object[]) {
-						for (Object val : (Object[])m.getValue()) {
+					} else if (m.getValue() instanceof Object[] values) {
+						for (Object val : values) {
 							if(SILENCED_CODEGENS.contains(val)) {
 								return true;
 							}
@@ -1229,8 +1297,8 @@ public final class JDTUtils {
 			return null;
 		}
 
-		if (constantValue instanceof String) {
-			return ASTNodes.getEscapedStringLiteral((String) constantValue);
+		if (constantValue instanceof String s) {
+			return ASTNodes.getEscapedStringLiteral(s);
 		} else if (constantValue instanceof Character) {
 			return '\'' + constantValue.toString() + '\'';
 		} else {
@@ -1255,7 +1323,7 @@ public final class JDTUtils {
 		}
 	}
 
-	private static ASTNode getHoveredASTNode(ITypeRoot typeRoot, IRegion region) {
+	public static ASTNode getHoveredASTNode(ITypeRoot typeRoot, IRegion region) {
 		if (typeRoot == null || region == null) {
 			return null;
 		}
@@ -1331,8 +1399,8 @@ public final class JDTUtils {
 		} catch (OperationCanceledException e) {
 			return null;
 		}
-		if (createBindings[0] instanceof IVariableBinding) {
-			return ((IVariableBinding) createBindings[0]).getConstantValue();
+		if (createBindings[0] instanceof IVariableBinding variableBinding) {
+			return variableBinding.getConstantValue();
 		}
 
 		return null;
@@ -1359,13 +1427,13 @@ public final class JDTUtils {
 		}
 
 		Object defaultValue = memberValuePair.getValue();
-		boolean isEmptyArray = defaultValue instanceof Object[] && ((Object[]) defaultValue).length == 0;
+		boolean isEmptyArray = defaultValue instanceof Object[] values && values.length == 0;
 		int valueKind = memberValuePair.getValueKind();
 
 		if (valueKind == IMemberValuePair.K_UNKNOWN && !isEmptyArray) {
 			IBinding binding = getHoveredNodeBinding(method, typeRoot, hoverRegion);
-			if (binding instanceof IMethodBinding) {
-				Object value = ((IMethodBinding) binding).getDefaultValue();
+			if (binding instanceof IMethodBinding methodBinding) {
+				Object value = methodBinding.getDefaultValue();
 				StringBuilder buf = new StringBuilder();
 				try {
 					addValue(buf, value, false);
@@ -1377,8 +1445,8 @@ public final class JDTUtils {
 
 		} else if (defaultValue != null) {
 			IAnnotation parentAnnotation = (IAnnotation) method.getAncestor(IJavaElement.ANNOTATION);
-			StringBuilder buf = new StringBuilder();
-			new JavaElementLabelComposer(buf).appendAnnotationValue(parentAnnotation, defaultValue, valueKind, JavaElementLabels.LABEL_FLAGS);
+			StringBuffer buf = new StringBuffer();
+			new JavaElementLabelComposerCore(buf).appendAnnotationValue(parentAnnotation, defaultValue, valueKind, LABEL_FLAGS);
 			return buf.toString();
 		}
 
@@ -1387,8 +1455,7 @@ public final class JDTUtils {
 
 	private static void addValue(StringBuilder buf, Object value, boolean addLinks) throws URISyntaxException {
 		// Note: To be bug-compatible with Javadoc from Java 5/6/7, we currently don't escape HTML tags in String-valued annotations.
-		if (value instanceof ITypeBinding) {
-			ITypeBinding typeBinding = (ITypeBinding) value;
+		if (value instanceof ITypeBinding typeBinding) {
 			IJavaElement type = typeBinding.getJavaElement();
 			if (type == null || !addLinks) {
 				buf.append(typeBinding.getName());
@@ -1399,8 +1466,7 @@ public final class JDTUtils {
 			}
 			buf.append(".class"); //$NON-NLS-1$
 
-		} else if (value instanceof IVariableBinding) { // only enum constants
-			IVariableBinding variableBinding = (IVariableBinding) value;
+		} else if (value instanceof IVariableBinding variableBinding) { // only enum constants
 			IJavaElement variable = variableBinding.getJavaElement();
 			if (variable == null || !addLinks) {
 				buf.append(variableBinding.getName());
@@ -1410,22 +1476,20 @@ public final class JDTUtils {
 				addLink(buf, uri, name);
 			}
 
-		} else if (value instanceof IAnnotationBinding) {
-			IAnnotationBinding annotationBinding = (IAnnotationBinding) value;
+		} else if (value instanceof IAnnotationBinding annotationBinding) {
 			addAnnotation(buf, annotationBinding, addLinks);
 
-		} else if (value instanceof String) {
-			buf.append(ASTNodes.getEscapedStringLiteral((String) value));
+		} else if (value instanceof String s) {
+			buf.append(ASTNodes.getEscapedStringLiteral(s));
 
-		} else if (value instanceof Character) {
-			buf.append(ASTNodes.getEscapedCharacterLiteral(((Character) value).charValue()));
+		} else if (value instanceof Character c) {
+			buf.append(ASTNodes.getEscapedCharacterLiteral(c.charValue()));
 
-		} else if (value instanceof Object[]) {
-			Object[] values = (Object[]) value;
+		} else if (value instanceof Object[] values) {
 			buf.append('{');
 			for (int i = 0; i < values.length; i++) {
 				if (i > 0) {
-					buf.append(JavaElementLabels.COMMA_STRING);
+					buf.append(JavaElementLabelsCore.COMMA_STRING);
 				}
 				addValue(buf, values[i], addLinks);
 			}
@@ -1455,7 +1519,7 @@ public final class JDTUtils {
 			buf.append('(');
 			for (int j = 0; j < mvPairs.length; j++) {
 				if (j > 0) {
-					buf.append(JavaElementLabels.COMMA_STRING);
+					buf.append(JavaElementLabelsCore.COMMA_STRING);
 				}
 				IMemberValuePairBinding mvPair = mvPairs[j];
 				if (addLinks) {
@@ -1493,8 +1557,7 @@ public final class JDTUtils {
 	}
 
 	private static IBinding resolveBinding(ASTNode node) {
-		if (node instanceof SimpleName) {
-			SimpleName simpleName = (SimpleName) node;
+		if (node instanceof SimpleName simpleName) {
 			// workaround for https://bugs.eclipse.org/62605 (constructor name resolves to type, not method)
 			ASTNode normalized = ASTNodes.getNormalizedNode(simpleName);
 			if (normalized.getLocationInParent() == ClassInstanceCreation.TYPE_PROPERTY) {
@@ -1512,12 +1575,12 @@ public final class JDTUtils {
 			}
 			return simpleName.resolveBinding();
 
-		} else if (node instanceof SuperConstructorInvocation) {
-			return ((SuperConstructorInvocation) node).resolveConstructorBinding();
-		} else if (node instanceof ConstructorInvocation) {
-			return ((ConstructorInvocation) node).resolveConstructorBinding();
-		} else if (node instanceof LambdaExpression) {
-			return ((LambdaExpression) node).resolveMethodBinding();
+		} else if (node instanceof SuperConstructorInvocation superConstructorInvocation) {
+			return superConstructorInvocation.resolveConstructorBinding();
+		} else if (node instanceof ConstructorInvocation constructorInvocation) {
+			return constructorInvocation.resolveConstructorBinding();
+		} else if (node instanceof LambdaExpression lambda) {
+			return lambda.resolveMethodBinding();
 		} else {
 			return null;
 		}
@@ -1620,10 +1683,9 @@ public final class JDTUtils {
 				}
 			}
 			char[] signature = proposal.getSignature();
-			if (proposal instanceof InternalCompletionProposal) {
-				Binding binding = ((InternalCompletionProposal) proposal).getBinding();
-				if (binding instanceof MethodBinding) {
-					MethodBinding methodBinding = (MethodBinding) binding;
+			if (proposal instanceof InternalCompletionProposal internalProposal) {
+				Binding binding = internalProposal.getBinding();
+				if (binding instanceof MethodBinding methodBinding) {
 					MethodBinding original = methodBinding.original();
 					if (original != binding) {
 						signature = Engine.getSignature(original);
@@ -1699,13 +1761,13 @@ public final class JDTUtils {
 						return locations;
 					}
 					OccurrencesFinder finder = new OccurrencesFinder();
-					if (node instanceof MethodDeclaration) {
-						SimpleName name = ((MethodDeclaration) node).getName();
+					if (node instanceof MethodDeclaration methodDecl) {
+						SimpleName name = methodDecl.getName();
 						finder.initialize(unit, name);
 					} else if (node instanceof Name) {
 						finder.initialize(unit, node);
-					} else if (node instanceof MethodInvocation) {
-						SimpleName name = ((MethodInvocation) node).getName();
+					} else if (node instanceof MethodInvocation methodInvocation) {
+						SimpleName name = methodInvocation.getName();
 					} else {
 						return locations;
 					}
@@ -1776,4 +1838,20 @@ public final class JDTUtils {
 		FileSystem fileSystems = path.getFileSystem();
 		return !patterns.stream().filter(pattern -> fileSystems.getPathMatcher("glob:" + pattern).matches(path)).collect(Collectors.toList()).isEmpty();
 	}
+
+	/**
+	 *
+	 * copied from
+	 * https://github.com/projectlombok/lombok/blob/731bb185077918af8bc1e6a9e6bb538b2d3fbbd8/src/eclipseAgent/lombok/launch/PatchFixesHider.java#L418-L426
+	 */
+	public static boolean isGenerated(IMember member) {
+		boolean result = false;
+		try {
+			result = member.getNameRange().getLength() <= 0 || member.getNameRange().equals(member.getSourceRange());
+		} catch (JavaModelException e) {
+			// better to assume it isn't generated
+		}
+		return result;
+	}
+
 }

@@ -16,6 +16,14 @@ package org.eclipse.jdt.ls.core.internal.semantictokens;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.eclipse.jdt.core.IJavaProject;
+import org.eclipse.jdt.core.ITypeRoot;
+import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jdt.core.JavaModelException;
+import org.eclipse.jdt.core.ToolFactory;
+import org.eclipse.jdt.core.compiler.IScanner;
+import org.eclipse.jdt.core.compiler.ITerminalSymbols;
+import org.eclipse.jdt.core.compiler.InvalidInputException;
 import org.eclipse.jdt.core.dom.ASTNode;
 import org.eclipse.jdt.core.dom.ASTVisitor;
 import org.eclipse.jdt.core.dom.ClassInstanceCreation;
@@ -39,21 +47,27 @@ import org.eclipse.jdt.core.dom.PackageDeclaration;
 import org.eclipse.jdt.core.dom.ParameterizedType;
 import org.eclipse.jdt.core.dom.QualifiedName;
 import org.eclipse.jdt.core.dom.QualifiedType;
+import org.eclipse.jdt.core.dom.RecordDeclaration;
 import org.eclipse.jdt.core.dom.RequiresDirective;
 import org.eclipse.jdt.core.dom.SimpleName;
 import org.eclipse.jdt.core.dom.SimpleType;
 import org.eclipse.jdt.core.dom.TagElement;
 import org.eclipse.jdt.core.dom.Type;
+import org.eclipse.jdt.core.dom.TypeDeclaration;
 import org.eclipse.jdt.core.dom.TypeLiteral;
+import org.eclipse.jdt.internal.core.dom.util.DOMASTUtil;
 import org.eclipse.lsp4j.SemanticTokens;
+import org.jsoup.select.NodeVisitor;
 
 public class SemanticTokensVisitor extends ASTVisitor {
 	private CompilationUnit cu;
+	private final IScanner scanner;
 	private List<SemanticToken> tokens;
 
 	public SemanticTokensVisitor(CompilationUnit cu) {
 		super(true);
 		this.cu = cu;
+		this.scanner = createScanner(cu);
 		this.tokens = new ArrayList<>();
 	}
 
@@ -432,6 +446,155 @@ public class SemanticTokensVisitor extends ASTVisitor {
 		return false;
 	}
 
+	@Override
+	public boolean visit(RecordDeclaration node) {
+		acceptNode(node.getJavadoc());
+		acceptNodeList(node.modifiers());
+		// Adds token for 'record' keyword. Token type 'MODIFIER' is used to provide the correct highlight colour.
+		addToken(node.getRestrictedIdentifierStartPosition(), 6, TokenType.MODIFIER, 0);
+		acceptNode(node.getName());
+		acceptNodeList(node.typeParameters());
+		acceptNodeList(node.recordComponents());
+		acceptNodeList(node.superInterfaceTypes());
+		acceptNodeList(node.bodyDeclarations());
+		return false;
+	}
+
+	@Override
+	public boolean visit(TypeDeclaration node) {
+		acceptNode(node.getJavadoc());
+		acceptNodeList(node.modifiers());
+		tokenizeGapBeforeTypeDeclarationName(node, (scannerToken, tokenOffset, tokenLength) -> {
+			switch (scannerToken) {
+				case ITerminalSymbols.TokenNameclass:
+				case ITerminalSymbols.TokenNameinterface:
+					addToken(tokenOffset, tokenLength, TokenType.MODIFIER, 0);
+					break; // "class" or "interface" keyword tokens
+				default:
+					break; // ignore other tokens
+			}
+		});
+		acceptNode(node.getName());
+		acceptNodeList(node.typeParameters());
+		acceptNode(node.getSuperclassType());
+		acceptNodeList(node.superInterfaceTypes());
+		acceptNodeList(node.bodyDeclarations());
+		if (DOMASTUtil.isFeatureSupportedinAST(cu.getAST(), Modifier.SEALED)) {
+			acceptNodeList(node.permittedTypes());
+		}
+		return false;
+	}
+
+	/**
+	 * Tries to create an {@link IScanner} for the source of the given compilation unit.
+	 *
+	 * @param cu the compilation unit
+	 * @return the scanner, or {@code null} if not available
+	 */
+	private IScanner createScanner(CompilationUnit cu) {
+		final ITypeRoot typeRoot = cu.getTypeRoot();
+		if (typeRoot == null) {
+			return null;
+		}
+		final IJavaProject javaProject = typeRoot.getJavaProject();
+		if (javaProject == null) {
+			return null;
+		}
+		final String source;
+		try {
+			source = typeRoot.getSource();
+		} catch (JavaModelException e) {
+			return null;
+		}
+		if (source == null) {
+			return null;
+		}
+
+		final String sourceLevel = javaProject.getOption(JavaCore.COMPILER_SOURCE, true);
+		final String complianceLevel = javaProject.getOption(JavaCore.COMPILER_COMPLIANCE, true);
+		final boolean enablePreview = JavaCore.ENABLED.equals(javaProject.getOption(JavaCore.COMPILER_PB_ENABLE_PREVIEW_FEATURES, true));
+
+		final IScanner scanner = ToolFactory.createScanner(false, false, false, sourceLevel, complianceLevel, enablePreview);
+		scanner.setSource(source.toCharArray());
+		return scanner;
+	}
+
+	private int getNextValidToken(IScanner scanner) {
+		while (true) {
+			try {
+				return scanner.getNextToken();
+			} catch (InvalidInputException e) {
+				// ignore
+			}
+		}
+	}
+
+	/**
+	 * Visitor for {@link IScanner} tokens.
+	 */
+	@FunctionalInterface
+	private interface ScannerTokenVisitor {
+		/**
+		 * Visits the given scanner token.
+		 *
+		 * @param scannerToken the scanner token ID, see {@link ITerminalSymbols}
+		 * @param tokenOffset the document offset of the scanner token
+		 * @param tokenLength the length of the scanner token
+		 */
+		public void visit(int scannerToken, int tokenOffset, int tokenLength);
+	}
+
+	/**
+	 * Uses an {@link IScanner} (if available) to tokenize a source range in the document,
+	 * and visits the scanner tokens in order of occurrence in the source range.
+	 *
+	 * <p>
+	 *     <strong>NOTE:</strong> If semantic tokens are added by the visitor, the scan range MUST NOT intersect
+	 *     with any other range where semantic tokens can appear, in order to avoid overlapping semantic tokens.
+	 * </p>
+	 *
+	 * @param startPosition the (inclusive) start position of the scan range
+	 * @param endPosition the (exclusive) end position of the scan range
+	 * @param tokenVisitor the visitor to use for scanner tokens
+	 */
+	private void tokenizeWithScanner(int startPosition, int endPosition, ScannerTokenVisitor tokenVisitor) {
+		if (scanner == null) {
+			return;
+		}
+		scanner.resetTo(startPosition, endPosition - 1); // -1 because resetTo wants inclusive endPosition
+		for (int token = getNextValidToken(scanner); token != ITerminalSymbols.TokenNameEOF; token = getNextValidToken(scanner)) {
+			int tokenOffset = scanner.getCurrentTokenStartPosition();
+			int tokenLength = scanner.getCurrentTokenEndPosition() - tokenOffset + 1; // +1 because getCurrentTokenEndPosition is inclusive
+			tokenVisitor.visit(token, tokenOffset, tokenLength);
+		}
+	}
+
+	/**
+	 * Uses an {@link IScanner} (if available) to tokenize the gap in the AST just before {@link TypeDeclaration#getName()},
+	 * and visits the scanner tokens in order of occurrence in the source range.
+	 *
+	 * <p>
+	 *     <strong>NOTE:</strong> If semantic tokens are added by the visitor, the scan range MUST NOT intersect
+	 *     with any other range where semantic tokens can appear, in order to avoid overlapping semantic tokens.
+	 * </p>
+	 *
+	 * @param typeDeclaration the type declaration node
+	 * @param tokenVisitor the visitor to use for scanner tokens
+	 */
+	private void tokenizeGapBeforeTypeDeclarationName(TypeDeclaration typeDeclaration, ScannerTokenVisitor tokenVisitor) {
+		// Try potentially nonexistent start positions, closest first
+		int gapBeforeNameStart = getEndPosition(typeDeclaration.modifiers());
+		if (gapBeforeNameStart == -1) {
+			gapBeforeNameStart = getEndPosition(typeDeclaration.getJavadoc());
+		}
+		// Fallback to closest known start position
+		if (gapBeforeNameStart == -1) {
+			gapBeforeNameStart = typeDeclaration.getStartPosition();
+		}
+		int gapBeforeNameEnd = typeDeclaration.getName().getStartPosition();
+		tokenizeWithScanner(gapBeforeNameStart, gapBeforeNameEnd, tokenVisitor);
+	}
+
 	/**
 	 * A node visitor may be used by helpers like {@link #visitSimpleNameOfType(Name, NodeVisitor)},
 	 * and is responsible for the visitation logic of a special kind of node.
@@ -502,6 +665,40 @@ public class SemanticTokensVisitor extends ASTVisitor {
 	}
 
 	/**
+	 * Gets the (exclusive) document end position of the given list of AST nodes.
+	 *
+	 * <p>
+	 *     The caller is responsible for making sure that the element type
+	 *     of the given list is {@link ASTNode}.
+	 * </p>
+	 *
+	 * @param nodeList the list of AST nodes (may be {@code null})
+	 * @return the end position, or {@code -1} if unknown
+	 */
+	private int getEndPosition(List<?> nodeList) {
+		if (nodeList != null && !nodeList.isEmpty()) {
+			ASTNode lastNode = (ASTNode) nodeList.get(nodeList.size() - 1);
+			return lastNode.getStartPosition() + lastNode.getLength();
+		} else {
+			return -1;
+		}
+	}
+
+	/**
+	 * Gets the (exclusive) document end position of the given AST node.
+	 *
+	 * @param node the AST node (may be {@code null})
+	 * @return the end position, or {@code -1} if unknown
+	 */
+	private int getEndPosition(ASTNode node) {
+		if (node != null) {
+			return node.getStartPosition() + node.getLength();
+		} else {
+			return -1;
+		}
+	}
+
+	/**
 	 * Helper method to recursively visit all the simple names of a {@link Name} node
 	 * using the specified {@link NodeVisitor}.
 	 *
@@ -512,11 +709,9 @@ public class SemanticTokensVisitor extends ASTVisitor {
 		if (name == null) {
 			return;
 		}
-		if (name instanceof SimpleName) {
-			visitor.visit((SimpleName) name);
-		}
-		else {
-			QualifiedName qualifiedName = (QualifiedName) name;
+		if (name instanceof SimpleName simpleName) {
+			visitor.visit(simpleName);
+		} else if (name instanceof QualifiedName qualifiedName) {
 			visitSimpleNamesOfName(qualifiedName.getQualifier(), visitor);
 			visitor.visit(qualifiedName.getName());
 		}
@@ -544,34 +739,28 @@ public class SemanticTokensVisitor extends ASTVisitor {
 		if (type == null) {
 			return;
 		}
-		else if (type instanceof SimpleType) {
-			SimpleType simpleType = (SimpleType) type;
+		else if (type instanceof SimpleType simpleType) {
 			acceptNodeList(simpleType.annotations());
 
 			Name simpleTypeName = simpleType.getName();
-			if (simpleTypeName instanceof SimpleName) {
-				visitor.visit((SimpleName) simpleTypeName);
-			}
-			else {
-				QualifiedName qualifiedName = (QualifiedName) simpleTypeName;
+			if (simpleTypeName instanceof SimpleName simpleName) {
+				visitor.visit(simpleName);
+			} else if (simpleTypeName instanceof QualifiedName qualifiedName) {
 				qualifiedName.getQualifier().accept(this);
 				visitor.visit(qualifiedName.getName());
 			}
 		}
-		else if (type instanceof QualifiedType) {
-			QualifiedType qualifiedType = (QualifiedType) type;
+		else if (type instanceof QualifiedType qualifiedType) {
 			qualifiedType.getQualifier().accept(this);
 			acceptNodeList(qualifiedType.annotations());
 			visitor.visit(qualifiedType.getName());
 		}
-		else if (type instanceof NameQualifiedType) {
-			NameQualifiedType nameQualifiedType = (NameQualifiedType) type;
+		else if (type instanceof NameQualifiedType nameQualifiedType) {
 			nameQualifiedType.getQualifier().accept(this);
 			acceptNodeList(nameQualifiedType.annotations());
 			visitor.visit(nameQualifiedType.getName());
 		}
-		else if (type instanceof ParameterizedType) {
-			ParameterizedType parameterizedType = (ParameterizedType) type;
+		else if (type instanceof ParameterizedType parameterizedType) {
 			visitSimpleNameOfType(parameterizedType.getType(), visitor);
 			visitNodeList(parameterizedType.typeArguments(), this::typeArgumentVisitor);
 		}

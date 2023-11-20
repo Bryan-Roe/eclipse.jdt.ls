@@ -73,7 +73,7 @@ public class SyntaxInitHandler extends BaseInitHandler {
 			capabilities.setHoverProvider(Boolean.TRUE);
 		}
 		if (!preferenceManager.getClientPreferences().isCompletionDynamicRegistered()) {
-			capabilities.setCompletionProvider(CompletionHandler.DEFAULT_COMPLETION_OPTIONS);
+			capabilities.setCompletionProvider(CompletionHandler.getDefaultCompletionOptions(preferenceManager));
 		}
 		if (!preferenceManager.getClientPreferences().isDocumentHighlightDynamicRegistered()) {
 			capabilities.setDocumentHighlightProvider(Boolean.TRUE);

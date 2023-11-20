@@ -14,7 +14,9 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.internal.corrections;
 
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.jdt.core.CompletionProposal;
@@ -180,6 +182,10 @@ public class SimilarElementsRequestor extends CompletionRequestor {
 
 	private SimilarElement[] process(ICompilationUnit cu, int pos) throws JavaModelException {
 		try {
+			List<String> importedElements = Arrays.stream(cu.getImports())
+						.map(t -> t.getElementName())
+						.toList();
+			TypeFilter.getDefault().removeFilterIfMatched(importedElements);
 			cu.codeComplete(pos, this);
 			processKeywords();
 			return fResult.toArray(new SimilarElement[fResult.size()]);
@@ -266,6 +272,7 @@ public class SimilarElementsRequestor extends CompletionRequestor {
 		dummyCU.append("\n}\n }"); //$NON-NLS-1$
 
 		ICompilationUnit newCU= null;
+		String contents = cu.getBuffer().getContents();
 		try {
 			newCU= cu.getWorkingCopy(null);
 			newCU.getBuffer().setContents(dummyCU.toString());
@@ -297,10 +304,13 @@ public class SimilarElementsRequestor extends CompletionRequestor {
 			requestor.setFavoriteReferences(favorites);
 
 			newCU.codeComplete(offset, requestor);
-
+			// if cu is working copy, we should restore the contents saved previously.
+			if (cu.isWorkingCopy()) {
+				cu.getBuffer().setContents(contents);
+			}
 			return result.toArray(new String[result.size()]);
 		} finally {
-			if (newCU != null) {
+			if (newCU != null && !cu.isWorkingCopy()) {
 				newCU.discardWorkingCopy();
 			}
 		}

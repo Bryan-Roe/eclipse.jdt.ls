@@ -18,6 +18,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -25,6 +26,7 @@ import org.eclipse.core.internal.resources.CheckMissingNaturesListener;
 import org.eclipse.core.internal.resources.ValidateProjectEncoding;
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IMarker;
+import org.eclipse.core.resources.IMarkerDelta;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IResourceChangeEvent;
@@ -53,9 +55,7 @@ import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jface.text.BadLocationException;
 import org.eclipse.jface.text.IDocument;
 import org.eclipse.lsp4j.Diagnostic;
-import org.eclipse.lsp4j.DiagnosticRelatedInformation;
 import org.eclipse.lsp4j.DiagnosticSeverity;
-import org.eclipse.lsp4j.Location;
 import org.eclipse.lsp4j.Position;
 import org.eclipse.lsp4j.PublishDiagnosticsParams;
 import org.eclipse.lsp4j.Range;
@@ -121,6 +121,9 @@ public final class WorkspaceDiagnosticsHandler implements IResourceChangeListene
 	 */
 	@Override
 	public boolean visit(IResourceDelta delta) throws CoreException {
+		if (delta.getFlags() == IResourceDelta.MARKERS && Arrays.stream(delta.getMarkerDeltas()).map(IMarkerDelta::getMarker).noneMatch(WorkspaceDiagnosticsHandler::isInteresting)) {
+			return false;
+		}
 		IResource resource = delta.getResource();
 		if (resource == null) {
 			return false;
@@ -176,10 +179,7 @@ public final class WorkspaceDiagnosticsHandler implements IResourceChangeListene
 				return false;
 			}
 			if (!cu.isWorkingCopy()) {
-				IMarker[] javaMarkers = resource.findMarkers(IJavaModelMarker.JAVA_MODEL_PROBLEM_MARKER, false, IResource.DEPTH_ONE);
-				IMarker[] taskMarkers = resource.findMarkers(IJavaModelMarker.TASK_MARKER, false, IResource.DEPTH_ONE);
-				markers = Arrays.copyOf(javaMarkers, javaMarkers.length + taskMarkers.length);
-				System.arraycopy(taskMarkers, 0, markers, javaMarkers.length, taskMarkers.length);
+				markers = resource.findMarkers(null, false, IResource.DEPTH_ONE);
 				document = JsonRpcHelpers.toDocument(cu.getBuffer());
 			} else if (handler != null) {
 				handler.triggerValidation(cu);
@@ -266,6 +266,10 @@ public final class WorkspaceDiagnosticsHandler implements IResourceChangeListene
 					continue;
 				}
 				IResource resource = marker.getResource();
+				if (resource instanceof IFile && JavaCore.isJavaLikeFileName(resource.getName())) {
+					markers.add(marker);
+					continue;
+				}
 				if (project.equals(resource) || projectsManager.isBuildFile(resource)) {
 					markers.add(marker);
 				}
@@ -294,9 +298,8 @@ public final class WorkspaceDiagnosticsHandler implements IResourceChangeListene
 		Map<IResource, List<IMarker>> map = markers.stream().collect(Collectors.groupingBy(IMarker::getResource));
 		for (Map.Entry<IResource, List<IMarker>> entry : map.entrySet()) {
 			IResource resource = entry.getKey();
-			if (resource instanceof IProject) {
+			if (resource instanceof IProject project) {
 				try {
-					IProject project = (IProject) resource;
 					publishMarkers(project, entry.getValue().toArray(new IMarker[0]));
 				} catch (CoreException e) {
 					JavaLanguageServerPlugin.logException(e.getMessage(), e);
@@ -342,8 +345,9 @@ public final class WorkspaceDiagnosticsHandler implements IResourceChangeListene
 	 * @return a list of {@link Diagnostic}s
 	 */
 	public static List<Diagnostic> toDiagnosticArray(Range range, Collection<IMarker> markers, boolean isDiagnosticTagSupported) {
-		List<Diagnostic> diagnostics = markers.stream().map(m -> toDiagnostic(range, m, isDiagnosticTagSupported)).filter(d -> d != null).collect(Collectors.toList());
-		return diagnostics;
+		return markers.stream().filter(WorkspaceDiagnosticsHandler::isInteresting).map(m -> toDiagnostic(range, m, isDiagnosticTagSupported)) //
+				.filter(Objects::nonNull) //
+				.collect(Collectors.toList());
 	}
 
 	private static Diagnostic toDiagnostic(Range range, IMarker marker, boolean isDiagnosticTagSupported) {
@@ -374,7 +378,8 @@ public final class WorkspaceDiagnosticsHandler implements IResourceChangeListene
 
 	/**
 	 * Transforms {@link IMarker}s of a {@link IDocument} into a list of
-	 * {@link Diagnostic}s.
+	 * {@link Diagnostic}s; excluding marker types configured in
+	 * {@link ClientPreferences}
 	 *
 	 * @param document
 	 * @param markers
@@ -382,10 +387,20 @@ public final class WorkspaceDiagnosticsHandler implements IResourceChangeListene
 	 */
 	public static List<Diagnostic> toDiagnosticsArray(IDocument document, IMarker[] markers, boolean isDiagnosticTagSupported) {
 		List<Diagnostic> diagnostics = Stream.of(markers)
-				.map(m -> toDiagnostic(document, m, isDiagnosticTagSupported))
-				.filter(d -> d != null)
-				.collect(Collectors.toList());
+				.filter(WorkspaceDiagnosticsHandler::isInteresting).map(m -> toDiagnostic(document, m, isDiagnosticTagSupported)) //
+				.filter(Objects::nonNull) //
+				.collect(Collectors.toCollection(ArrayList::new));
 		return diagnostics;
+	}
+
+	private static boolean isInteresting(IMarker marker) {
+		return JavaLanguageServerPlugin.getPreferencesManager().getClientPreferences().excludedMarkerTypes().stream().noneMatch(markerType -> {
+			try {
+				return marker.isSubtypeOf(markerType);
+			} catch (CoreException e) {
+				return true; // resource not accessible makes the marker not interesting
+			}
+		});
 	}
 
 	private static Diagnostic toDiagnostic(IDocument document, IMarker marker, boolean isDiagnosticTagSupported) {

@@ -26,6 +26,7 @@ import static org.mockito.Mockito.verify;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -37,10 +38,11 @@ import java.util.Set;
 
 import org.eclipse.core.internal.resources.Resource;
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.IResource;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
-import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.core.runtime.jobs.Job;
@@ -55,6 +57,7 @@ import org.eclipse.jdt.ls.core.internal.ServiceStatus;
 import org.eclipse.jdt.ls.core.internal.WorkspaceHelper;
 import org.eclipse.jdt.ls.core.internal.handlers.BuildWorkspaceHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.JDTLanguageServer;
+import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager.CHANGE_TYPE;
 import org.eclipse.lsp4j.InitializeParams;
 import org.junit.After;
 import org.junit.Before;
@@ -133,7 +136,11 @@ public class ProjectsManagerTest extends AbstractProjectsManagerBasedTest {
 		projectsManager.updateWorkspaceFolders(Collections.emptySet(), rootPaths);
 		waitForBackgroundJobs();
 		JobHelpers.waitForJobs(IConstants.UPDATE_WORKSPACE_FOLDERS_FAMILY, new NullProgressMonitor());
-		assertTrue("the init job hasn't been cancelled, status is: " + initWorkspaceJob.getResult().getSeverity(), initWorkspaceJob.getResult().matches(IStatus.CANCEL));
+		// https://github.com/eclipse/eclipse.jdt.ls/issues/2326
+		// Job.getResult() returns null if the job has never finished running.
+		// we can verify that the job is gone
+		// assertTrue("the init job hasn't been cancelled, status is: " + initWorkspaceJob.getResult().getSeverity(), initWorkspaceJob.getResult().matches(IStatus.CANCEL));
+		assertEquals("the init job hasn't been stopped, status is: " + initWorkspaceJob.getState(), 0, Job.getJobManager().find(rootPaths).length);
 	}
 
 	@Test
@@ -148,7 +155,8 @@ public class ProjectsManagerTest extends AbstractProjectsManagerBasedTest {
 		projectsManager.updateWorkspaceFolders(Collections.emptySet(), addedRootPaths);
 		waitForBackgroundJobs();
 		JobHelpers.waitForJobs(IConstants.UPDATE_WORKSPACE_FOLDERS_FAMILY, new NullProgressMonitor());
-		assertTrue("the update job hasn't been cancelled, status is: " + updateWorkspaceJob.getResult().getSeverity(), updateWorkspaceJob.getResult().matches(IStatus.CANCEL));
+		// assertTrue("the update job hasn't been cancelled, status is: " + updateWorkspaceJob.getResult().getSeverity(), updateWorkspaceJob.getResult().matches(IStatus.CANCEL));
+		assertEquals("the init job hasn't been stopped, status is: " + updateWorkspaceJob.getState(), 0, Job.getJobManager().find(addedRootPaths).length);
 	}
 
 	@Test
@@ -165,7 +173,7 @@ public class ProjectsManagerTest extends AbstractProjectsManagerBasedTest {
 			assertFalse(git.isFiltered());
 			Resource src = (Resource) project.getFolder("/src");
 			assertFalse(src.isFiltered());
-			preferenceManager.getPreferences().setResourceFilters(Arrays.asList("node_modules", ".git"));
+			preferenceManager.getPreferences().setResourceFilters(Arrays.asList("node_modules", "\\.git"));
 			projectsManager.configureFilters(new NullProgressMonitor());
 			waitForJobsToComplete();
 			nodeModules = (Resource) project.getFolder("/node_modules");
@@ -186,6 +194,39 @@ public class ProjectsManagerTest extends AbstractProjectsManagerBasedTest {
 		} finally {
 			preferenceManager.getPreferences().setResourceFilters(resourceFilters);
 		}
+	}
+
+	@Test
+	public void testInvalidResourceFilters() throws Exception {
+		List<String> resourceFilters = preferenceManager.getPreferences().getResourceFilters();
+		try {
+			String name = "salut";
+			importProjects("maven/" + name);
+			IProject project = getProject(name);
+			assertIsJavaProject(project);
+			List<String> pref = Arrays.asList("**/node_modules/**", "node_modules", "\\.git");
+			assertEquals(3, pref.size());
+			preferenceManager.getPreferences().setResourceFilters(pref);
+			projectsManager.configureFilters(new NullProgressMonitor());
+			waitForJobsToComplete();
+			List<String> filters = preferenceManager.getPreferences().getResourceFilters();
+			assertEquals(2, filters.size());
+		} finally {
+			preferenceManager.getPreferences().setResourceFilters(resourceFilters);
+		}
+	}
+
+	@Test
+	public void dontFilterGitLikePackages() throws Exception {
+		//See https://github.com/eclipse/eclipse.jdt.ls/issues/2244
+		String name = "gitfilter";
+		importProjects("eclipse/" + name);
+		projectsManager.configureFilters(monitor);
+		Thread.sleep(300);//FIXME waitForJobsToComplete is ineffective on its own O_o
+		waitForJobsToComplete(monitor);
+		IProject project = getProject(name);
+		assertIsJavaProject(project);
+		assertNoErrors(project);
 	}
 
 	@Test
@@ -281,5 +322,49 @@ public class ProjectsManagerTest extends AbstractProjectsManagerBasedTest {
 		verify(server, times(2)).sendStatus(status.capture(), msg.capture());
 		assertEquals(ServiceStatus.ProjectStatus, status.getValue());
 		assertEquals("WARNING", msg.getValue());
+	}
+
+	@Test
+	public void testReloadMavenProjectMarker() throws Exception {
+		importProjects("maven/salut");
+		IProject project = WorkspaceHelper.getProject("salut");
+		IFile pom = project.getFile("pom.xml");
+		IMarker[] markers = pom.findMarkers(ProjectsManager.BUILD_FILE_MARKER_TYPE, false, IResource.DEPTH_ZERO);
+		assertEquals(0, markers.length);
+
+		URI pomUri = pom.getRawLocationURI();
+		String originalPom = ResourceUtils.getContent(pomUri);
+		ResourceUtils.setContent(pomUri, originalPom + "\n");
+		projectsManager.fileChanged(pomUri.toString(), CHANGE_TYPE.CHANGED);
+		waitForBackgroundJobs();
+		markers = pom.findMarkers(ProjectsManager.BUILD_FILE_MARKER_TYPE, false, IResource.DEPTH_ZERO);
+		assertEquals(1, markers.length);
+
+		projectsManager.updateProject(project, true);
+		waitForBackgroundJobs();
+		markers = pom.findMarkers(ProjectsManager.BUILD_FILE_MARKER_TYPE, false, IResource.DEPTH_ZERO);
+		assertEquals(0, markers.length);
+	}
+
+	@Test
+	public void testReloadGradleProjectMarker() throws Exception {
+		importProjects("gradle/sample");
+		IProject project = WorkspaceHelper.getProject("sample");
+		IFile gradle = project.getFile("settings.gradle");
+		IMarker[] markers = gradle.findMarkers(ProjectsManager.BUILD_FILE_MARKER_TYPE, false, IResource.DEPTH_ZERO);
+		assertEquals(0, markers.length);
+
+		URI gradleUri = gradle.getRawLocationURI();
+		String originalGradle = ResourceUtils.getContent(gradleUri);
+		ResourceUtils.setContent(gradleUri, originalGradle + "\n");
+		projectsManager.fileChanged(gradleUri.toString(), CHANGE_TYPE.CHANGED);
+		waitForBackgroundJobs();
+		markers = gradle.findMarkers(ProjectsManager.BUILD_FILE_MARKER_TYPE, false, IResource.DEPTH_ZERO);
+		assertEquals(1, markers.length);
+
+		projectsManager.updateProject(project, true);
+		waitForBackgroundJobs();
+		markers = gradle.findMarkers(ProjectsManager.BUILD_FILE_MARKER_TYPE, false, IResource.DEPTH_ZERO);
+		assertEquals(0, markers.length);
 	}
 }

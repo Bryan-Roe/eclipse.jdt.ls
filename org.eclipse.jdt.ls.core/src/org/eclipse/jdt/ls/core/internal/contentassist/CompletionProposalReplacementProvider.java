@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016-2017 Red Hat Inc. and others.
+ * Copyright (c) 2016-2023 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import org.apache.commons.lang3.StringUtils;
 import org.eclipse.core.runtime.Assert;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
@@ -37,10 +38,15 @@ import org.eclipse.jdt.core.Signature;
 import org.eclipse.jdt.core.compiler.CharOperation;
 import org.eclipse.jdt.core.dom.ASTParser;
 import org.eclipse.jdt.core.dom.ASTRequestor;
+import org.eclipse.jdt.core.dom.CompilationUnit;
 import org.eclipse.jdt.core.dom.IBinding;
 import org.eclipse.jdt.core.dom.ITypeBinding;
 import org.eclipse.jdt.core.dom.rewrite.ImportRewrite;
+import org.eclipse.jdt.core.dom.rewrite.ImportRewrite.ImportRewriteContext;
+import org.eclipse.jdt.core.manipulation.SharedASTProviderCore;
 import org.eclipse.jdt.internal.codeassist.CompletionEngine;
+import org.eclipse.jdt.internal.codeassist.InternalCompletionProposal;
+import org.eclipse.jdt.internal.corext.codemanipulation.ContextSensitiveImportRewriteContext;
 import org.eclipse.jdt.internal.corext.dom.IASTSharedValues;
 import org.eclipse.jdt.internal.corext.template.java.SignatureUtil;
 import org.eclipse.jdt.ls.core.internal.ChangeUtil;
@@ -48,6 +54,7 @@ import org.eclipse.jdt.ls.core.internal.CompletionUtils;
 import org.eclipse.jdt.ls.core.internal.JDTUtils;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.TextEditConverter;
+import org.eclipse.jdt.ls.core.internal.handlers.CompletionGuessMethodArgumentsMode;
 import org.eclipse.jdt.ls.core.internal.handlers.JsonRpcHelpers;
 import org.eclipse.jdt.ls.core.internal.preferences.ClientPreferences;
 import org.eclipse.jdt.ls.core.internal.preferences.Preferences;
@@ -57,6 +64,7 @@ import org.eclipse.jface.text.IRegion;
 import org.eclipse.lsp4j.CompletionItem;
 import org.eclipse.lsp4j.InsertReplaceEdit;
 import org.eclipse.lsp4j.InsertTextFormat;
+import org.eclipse.lsp4j.InsertTextMode;
 import org.eclipse.lsp4j.Range;
 import org.eclipse.lsp4j.jsonrpc.messages.Either;
 import org.eclipse.text.edits.TextEdit;
@@ -88,39 +96,33 @@ public class CompletionProposalReplacementProvider {
 	private final ClientPreferences client;
 	private Preferences preferences;
 	private String anonymousTypeNewBody;
+	/**
+	 * whether the provider is used during `completionItem/resolve` request.
+	 */
+	private boolean isResolvingRequest;
 
-	public CompletionProposalReplacementProvider(ICompilationUnit compilationUnit, CompletionContext context, int offset, Preferences preferences, ClientPreferences clientPrefs) {
+	final Map<String, IBinding> bindings = new HashMap<>();
+
+	public CompletionProposalReplacementProvider(ICompilationUnit compilationUnit, CompletionContext context, int offset,
+			Preferences preferences, ClientPreferences clientPrefs, boolean isResolvingRequest) {
 		super();
 		this.compilationUnit = compilationUnit;
 		this.context = context;
 		this.offset = offset;
 		this.preferences = preferences == null ? new Preferences() : preferences;
 		this.client = clientPrefs;
+		this.isResolvingRequest = isResolvingRequest;
 	}
 
 	/**
-	 * Update the replacement together with additionalTextEdits for the given item.
-	 * It's originally designed to defer expensive calculation of the imports into completion/resolve stage.
-	 * @param proposal
-	 * @param item
-	 * @param trigger
-	 */
-	public void updateAdditionalTextEdits(CompletionProposal proposal, CompletionItem item, char trigger) {
-		updateReplacement(proposal, item, trigger, true);
-	}
-
-	/**
-	 * Updates the replacement but NO additional replacement for the given item.
+	 * Update the replacement.
 	 *
+	 * When {@link #isResolvingRequest} is <code>true</code>, additionalTextEdits will also be resolved.
 	 * @param proposal
 	 * @param item
 	 * @param trigger
 	 */
 	public void updateReplacement(CompletionProposal proposal, CompletionItem item, char trigger) {
-		updateReplacement(proposal, item, trigger, false);
-	}
-
-	private void updateReplacement(CompletionProposal proposal, CompletionItem item, char trigger, boolean isResolving) {
 		// reset importRewrite
 		this.importRewrite = TypeProposalUtils.createImportRewrite(compilationUnit);
 
@@ -162,13 +164,76 @@ public class CompletionProposalReplacementProvider {
 
 		setInsertReplaceRange(proposal, insertReplaceEdit);
 
+		String text = getTextEditText(proposal, item, completionBuffer, insertReplaceEdit);
+
+		//select insertTextFormat.
+		if (client.isCompletionSnippetsSupported()) {
+			item.setInsertTextFormat(InsertTextFormat.Snippet);
+		} else {
+			item.setInsertTextFormat(InsertTextFormat.PlainText);
+		}
+		if (isResolvingRequest || (!JavaLanguageServerPlugin.getPreferencesManager().getClientPreferences().isCompletionListItemDefaultsPropertySupport("insertTextMode")
+				&& JavaLanguageServerPlugin.getPreferencesManager().getClientPreferences().getCompletionItemInsertTextModeDefault() != InsertTextMode.AdjustIndentation)) {
+			item.setInsertTextMode(InsertTextMode.AdjustIndentation);
+		}
+
+		if (insertReplaceEdit.getReplace() == null || insertReplaceEdit.getInsert() == null) {
+			// fallback
+			item.setInsertText(text);
+			if (client.isCompletionListItemDefaultsSupport()) {
+				item.setTextEditText(SnippetUtils.templateToSnippet(text));
+			}
+		} else if (client.isCompletionInsertReplaceSupport()) {
+			insertReplaceEdit.setNewText(text);
+			item.setTextEdit(Either.forRight(insertReplaceEdit));
+		} else if (preferences.isCompletionOverwrite()) {
+			item.setTextEdit(Either.forLeft(new org.eclipse.lsp4j.TextEdit(insertReplaceEdit.getReplace(), text)));
+		} else {
+			item.setTextEdit(Either.forLeft(new org.eclipse.lsp4j.TextEdit(insertReplaceEdit.getInsert(), text)));
+		}
+
+		if (!CompletionProposalUtils.isImportCompletion(proposal) && (!client.isResolveAdditionalTextEditsSupport() ||
+				isResolvingRequest)) {
+			addImports(additionalTextEdits);
+			if(!additionalTextEdits.isEmpty()){
+				item.setAdditionalTextEdits(additionalTextEdits);
+			}
+		}
+	}
+
+	/**
+	 * Get the content of the text edit.
+	 */
+	private String getTextEditText(CompletionProposal proposal, CompletionItem item, StringBuilder completionBuffer, InsertReplaceEdit insertReplaceEdit) {
+		if (preferences.isCompletionLazyResolveTextEditEnabled() && !isResolvingRequest) {
+			if (!completionBuffer.isEmpty()) {
+				return completionBuffer.toString();
+			}
+			
+			String defaultText = getDefaultTextEditText(item);
+			int start = proposal.getReplaceStart();
+			int end = proposal.getReplaceEnd();
+			String toReplace;
+			try {
+				toReplace = compilationUnit.getBuffer().getText(start, end - start);
+				// in lazy resolve mode, early return when the text edit content starts
+				// with the replaced content. Otherwise, the filter text will mismatch the
+				// replaced content, causing the item disappear at client.
+				if (defaultText.startsWith(toReplace)) {
+					return defaultText;
+				}
+			} catch (IndexOutOfBoundsException | JavaModelException e) {
+				JavaLanguageServerPlugin.logException(e);
+			}
+		}
+
 		switch (proposal.getKind()) {
 			case CompletionProposal.METHOD_DECLARATION:
 				appendMethodOverrideReplacement(completionBuffer, proposal);
 				break;
 			case CompletionProposal.POTENTIAL_METHOD_DECLARATION:
-				if (proposal instanceof GetterSetterCompletionProposal) {
-					appendMethodPotentialReplacement(completionBuffer, (GetterSetterCompletionProposal) proposal);
+				if (proposal instanceof GetterSetterCompletionProposal getterSetterProposal) {
+					appendMethodPotentialReplacement(completionBuffer, getterSetterProposal);
 				} else {
 					appendReplacementString(completionBuffer, proposal);
 				}
@@ -184,38 +249,38 @@ public class CompletionProposalReplacementProvider {
 				appendReplacementString(completionBuffer, proposal);
 				break;
 		}
+		return completionBuffer.toString();
+	}
 
-		//select insertTextFormat.
-		if (client.isCompletionSnippetsSupported()) {
-			item.setInsertTextFormat(InsertTextFormat.Snippet);
-		} else {
-			item.setInsertTextFormat(InsertTextFormat.PlainText);
-		}
-		String text = completionBuffer.toString();
-		if (insertReplaceEdit.getReplace() == null || insertReplaceEdit.getInsert() == null) {
-			// fallback
-			item.setInsertText(text);
-		} else if (client.isCompletionInsertReplaceSupport()) {
-			insertReplaceEdit.setNewText(text);
-			item.setTextEdit(Either.forRight(insertReplaceEdit));
-		} else if (preferences.isCompletionOverwrite()) {
-			item.setTextEdit(Either.forLeft(new org.eclipse.lsp4j.TextEdit(insertReplaceEdit.getReplace(), text)));
-		} else {
-			item.setTextEdit(Either.forLeft(new org.eclipse.lsp4j.TextEdit(insertReplaceEdit.getInsert(), text)));
+	/**
+	 * Return a default text edit text (more like a placeholder). And let it
+	 * be corrected in completionItem/resolve request.
+	 */
+	private String getDefaultTextEditText(CompletionItem item) {
+		if (StringUtils.isNotBlank(item.getInsertText())) {
+			return item.getInsertText();
 		}
 
-		if (!isImportCompletion(proposal) && (!client.isResolveAdditionalTextEditsSupport() || isResolving)) {
-			addImports(additionalTextEdits);
-			if(!additionalTextEdits.isEmpty()){
-				item.setAdditionalTextEdits(additionalTextEdits);
-			}
+		if (StringUtils.isNotBlank(item.getLabel())) {
+			return item.getLabel();
 		}
+
+		return "";
 	}
 
 	private void appendLambdaExpressionReplacement(StringBuilder completionBuffer, CompletionProposal proposal) {
-		completionBuffer.append(LPAREN);
-		appendGuessingCompletion(completionBuffer, proposal);
-		completionBuffer.append(RPAREN);
+		StringBuilder paramBuffer = new StringBuilder();
+		appendGuessingCompletion(paramBuffer, proposal);
+		boolean needParens = paramBuffer.indexOf(",") > -1 || paramBuffer.length() == 0;
+
+		if (needParens) {
+			completionBuffer.append(LPAREN);
+		}
+		completionBuffer.append(paramBuffer);
+		if (needParens) {
+			completionBuffer.append(RPAREN);
+		}
+
 		completionBuffer.append(" -> ");
 		if(client.isCompletionSnippetsSupported()){
 			completionBuffer.append(CURSOR_POSITION);
@@ -470,12 +535,36 @@ public class CompletionProposalReplacementProvider {
 	}
 
 	private void appendReplacementString(StringBuilder buffer, CompletionProposal proposal) {
+		final boolean completionSnippetsSupported = client.isCompletionSnippetsSupported();
 		if (!hasArgumentList(proposal)) {
-			String str = proposal.getKind() == CompletionProposal.TYPE_REF ? computeJavaTypeReplacementString(proposal) : String.valueOf(proposal.getCompletion());
-			if (client.isCompletionSnippetsSupported()) {
-				str = CompletionUtils.sanitizeCompletion(str);
-				if (proposal.getKind() == CompletionProposal.PACKAGE_REF && str != null && str.endsWith(".*;")) {
-					str = str.replace(".*;", ".${0:*};");
+			String str = null;
+			if (proposal.getKind() == CompletionProposal.TYPE_REF) {
+				str = computeJavaTypeReplacementString(proposal);
+				if (completionSnippetsSupported) {
+					str = CompletionUtils.sanitizeCompletion(str);
+				}
+
+				if (proposal.getArrayDimensions() > 0) {
+					StringBuilder arrayString = new StringBuilder(str);
+					for (int i = 0; i < proposal.getArrayDimensions(); i++) {
+						arrayString.append("[");
+						if (completionSnippetsSupported) {
+							arrayString.append("$").append(i + 1);
+						}
+						arrayString.append("]");
+					}
+					if (completionSnippetsSupported) {
+						arrayString.append("$0");
+					}
+					str = arrayString.toString();
+				}
+			} else {
+				str = String.valueOf(proposal.getCompletion());
+				if (completionSnippetsSupported) {
+					str = CompletionUtils.sanitizeCompletion(str);
+					if (proposal.getKind() == CompletionProposal.PACKAGE_REF && str != null && str.endsWith(".*;")) {
+						str = str.replace(".*;", ".${0:*};");
+					}
 				}
 			}
 			buffer.append(str);
@@ -484,7 +573,7 @@ public class CompletionProposalReplacementProvider {
 
 		// we're inserting a method plus the argument list - respect formatter preferences
 		appendMethodNameReplacement(buffer, proposal);
-		final boolean addParen  = client.isCompletionSnippetsSupported();
+		final boolean addParen = completionSnippetsSupported;
 		if(addParen) {
 			buffer.append(LPAREN);
 		}
@@ -533,6 +622,16 @@ public class CompletionProposalReplacementProvider {
 	}
 
 	private void appendGuessingCompletion(StringBuilder buffer, CompletionProposal proposal) {
+		if (!client.isCompletionSnippetsSupported()) {
+			return;
+		}
+
+		CompletionGuessMethodArgumentsMode guessMethodArgumentsMode = JavaLanguageServerPlugin.getPreferencesManager().getPreferences().getGuessMethodArgumentsMode();
+		if (guessMethodArgumentsMode == CompletionGuessMethodArgumentsMode.OFF) {
+			buffer.append(CURSOR_POSITION);
+			return;
+		}
+
 		char[][] parameterNames;
 		try {
 			parameterNames = proposal.findParameterNames(null);
@@ -543,40 +642,41 @@ public class CompletionProposalReplacementProvider {
 			proposal.setParameterNames(parameterNames);
 		}
 
-		int count= parameterNames.length;
+		int count = parameterNames.length;
 
-		if(client.isCompletionSnippetsSupported()){
-			String[] choices = null;
-			boolean guessMethodArguments = JavaLanguageServerPlugin.getPreferencesManager() != null && JavaLanguageServerPlugin.getPreferencesManager().getPreferences().isGuessMethodArguments();
-			if (guessMethodArguments && (proposal.getKind() == CompletionProposal.METHOD_REF || proposal.getKind() == CompletionProposal.CONSTRUCTOR_INVOCATION || proposal.getKind() == CompletionProposal.METHOD_REF_WITH_CASTED_RECEIVER)) {
-				try {
-					choices = guessParameters(parameterNames, proposal);
-				} catch (JavaModelException e) {
-					JavaLanguageServerPlugin.logException(e.getMessage(), e);
-				}
+		String[] choices = null;
+		if (guessMethodArgumentsMode == CompletionGuessMethodArgumentsMode.INSERT_BEST_GUESSED_ARGUMENTS
+				&& (proposal.getKind() == CompletionProposal.METHOD_REF
+					|| proposal.getKind() == CompletionProposal.CONSTRUCTOR_INVOCATION
+					|| proposal.getKind() == CompletionProposal.METHOD_REF_WITH_CASTED_RECEIVER)
+		) {
+			try {
+				choices = guessParameters(parameterNames, proposal);
+			} catch (JavaModelException e) {
+				JavaLanguageServerPlugin.logException(e.getMessage(), e);
 			}
-			for (int i= 0; i < count; i++) {
-				if (i != 0) {
-					buffer.append(COMMA);
-					buffer.append(SPACE);
-				}
-				char[] argument;
-				if (choices != null) {
-					argument = choices[i].toCharArray();
-				} else {
-					argument = parameterNames[i];
-				}
-				if (client.isCompletionSnippetsSupported()) {
-					String replace = new String(argument);
-					replace = CompletionUtils.sanitizeCompletion(replace);
-					argument = replace.toCharArray();
-				}
-				buffer.append("${");
-				buffer.append(Integer.toString(i+1));
-				buffer.append(":");
-				buffer.append(argument);
-				buffer.append("}");
+		}
+		for (int i= 0; i < count; i++) {
+			if (i != 0) {
+				buffer.append(COMMA);
+				buffer.append(SPACE);
 			}
+			char[] argument;
+			if (choices != null) {
+				argument = choices[i].toCharArray();
+			} else {
+				argument = parameterNames[i];
+			}
+			if (client.isCompletionSnippetsSupported()) {
+				String replace = new String(argument);
+				replace = CompletionUtils.sanitizeCompletion(replace);
+				argument = replace.toCharArray();
+			}
+			buffer.append("${");
+			buffer.append(Integer.toString(i+1));
+			buffer.append(":");
+			buffer.append(argument);
+			buffer.append("}");
 		}
 	}
 
@@ -725,6 +825,12 @@ public class CompletionProposalReplacementProvider {
 				// with the corresponding type parameters to declared type
 
 				IType expectedType= (IType) expectedTypeBinding.getJavaElement();
+
+				if (proposal instanceof InternalCompletionProposal icp && !icp.isCompatibleProposal()) {
+					// the proposal is not compatible with the expected type
+					// -> do not add any type arguments
+					return new String[0];
+				}
 
 				IType[] path= TypeProposalUtils.computeInheritancePath(type, expectedType);
 				if (path == null) {
@@ -928,13 +1034,16 @@ public class CompletionProposalReplacementProvider {
 		for (int i= 0; i < keys.length; i++) {
 			keys[i]= String.valueOf(chKeys[0]);
 		}
+		// https://github.com/eclipse/eclipse.jdt.ls/pull/2535
+		if (bindings.size() > 0) {
+			return (ITypeBinding) bindings.get(keys[0]);
+		}
 
 		final ASTParser parser = ASTParser.newParser(IASTSharedValues.SHARED_AST_LEVEL);
 		parser.setProject(compilationUnit.getJavaProject());
 		parser.setResolveBindings(true);
 		parser.setStatementsRecovery(true);
 
-		final Map<String, IBinding> bindings= new HashMap<>();
 		ASTRequestor requestor= new ASTRequestor() {
 			@Override
 			public void acceptBinding(String bindingKey, IBinding binding) {
@@ -954,7 +1063,7 @@ public class CompletionProposalReplacementProvider {
 		String replacement = String.valueOf(proposal.getCompletion());
 
 		/* No import rewriting ever from within the import section. */
-		if (isImportCompletion(proposal)) {
+		if (CompletionProposalUtils.isImportCompletion(proposal)) {
 			return replacement;
 		}
 
@@ -988,8 +1097,7 @@ public class CompletionProposalReplacementProvider {
 		String prefix="";
 		try{
 			IDocument document = JsonRpcHelpers.toDocument(this.compilationUnit.getBuffer());
-			IRegion region= document.getLineInformationOfOffset(proposal.getReplaceEnd());
-			prefix =  document.get(region.getOffset(), proposal.getReplaceEnd() -region.getOffset()).trim();
+			prefix = document.get(proposal.getReplaceStart(), proposal.getReplaceEnd() - proposal.getReplaceStart());
 		}catch(BadLocationException | JavaModelException e){
 
 		}
@@ -1022,7 +1130,19 @@ public class CompletionProposalReplacementProvider {
 
 		/* Add imports if the preference is on. */
 		if (importRewrite != null) {
-			return importRewrite.addImport(qualifiedTypeName, null);
+			ImportRewriteContext context = null;
+			// Only get more context-aware result during 'completionItem/resolve' request.
+			// This is because 'ContextSensitiveImportRewriteContext.findInContext()'' is a very
+			// heavy operation. If we do that when listing the completion items, the performance
+			// will downgrade a lot.
+			if (isResolvingRequest) {
+				CompilationUnit cu = SharedASTProviderCore.getAST(compilationUnit, SharedASTProviderCore.WAIT_NO, new NullProgressMonitor());
+				if (cu != null) {
+					context = new ContextSensitiveImportRewriteContext(cu, this.offset, this.importRewrite);
+				}
+			}
+
+			return importRewrite.addImport(qualifiedTypeName, context);
 		}
 
 		// fall back for the case we don't have an import rewrite (see
@@ -1039,21 +1159,6 @@ public class CompletionProposalReplacementProvider {
 
 		/* Default: use the fully qualified type name. */
 		return qualifiedTypeName;
-	}
-
-	private boolean isImportCompletion(CompletionProposal proposal) {
-		char[] completion = proposal.getCompletion();
-		if (completion.length == 0) {
-			return false;
-		}
-
-		char last = completion[completion.length - 1];
-		/*
-		 * Proposals end in a semicolon when completing types in normal imports
-		 * or when completing static members, in a period when completing types
-		 * in static imports.
-		 */
-		return last == SEMICOLON || last == '.';
 	}
 
 }

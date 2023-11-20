@@ -21,6 +21,7 @@ import static org.eclipse.jdt.ls.core.internal.handlers.MapFlattener.getValue;
 import java.io.File;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -28,29 +29,49 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Hashtable;
+import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import org.eclipse.core.internal.resources.PreferenceInitializer;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
+import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.preferences.DefaultScope;
 import org.eclipse.core.runtime.preferences.IEclipsePreferences;
 import org.eclipse.core.runtime.preferences.InstanceScope;
+import org.eclipse.jdt.core.IClasspathEntry;
+import org.eclipse.jdt.core.IJavaElement;
+import org.eclipse.jdt.core.IJavaProject;
+import org.eclipse.jdt.core.IType;
 import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.core.formatter.DefaultCodeFormatterConstants;
 import org.eclipse.jdt.core.manipulation.CodeStyleConfiguration;
+import org.eclipse.jdt.core.manipulation.JavaManipulation;
+import org.eclipse.jdt.internal.core.manipulation.JavaManipulationPlugin;
 import org.eclipse.jdt.internal.core.manipulation.MembersOrderPreferenceCacheCommon;
+import org.eclipse.jdt.ls.core.internal.ActionableNotification;
 import org.eclipse.jdt.ls.core.internal.IConstants;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
+import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.ResourceUtils;
 import org.eclipse.jdt.ls.core.internal.RuntimeEnvironment;
+import org.eclipse.jdt.ls.core.internal.commands.ProjectCommand;
+import org.eclipse.jdt.ls.core.internal.commands.ProjectCommand.ClasspathResult;
 import org.eclipse.jdt.ls.core.internal.contentassist.TypeFilter;
+import org.eclipse.jdt.ls.core.internal.handlers.CompletionGuessMethodArgumentsMode;
+import org.eclipse.jdt.ls.core.internal.handlers.CompletionMatchCaseMode;
 import org.eclipse.jdt.ls.core.internal.handlers.InlayHintsParameterMode;
 import org.eclipse.jdt.ls.core.internal.handlers.ProjectEncodingMode;
+import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager;
+import org.eclipse.lsp4j.Command;
 import org.eclipse.lsp4j.MessageType;
 
 /**
@@ -61,11 +82,17 @@ import org.eclipse.lsp4j.MessageType;
  */
 public class Preferences {
 
+	private static final String IGNORE = "ignore";
 	public static final String LINE = "line";
 	/**
 	 * Specifies the folder path to the JDK .
 	 */
 	public static final String JAVA_HOME = "java.home";
+	/**
+	 * Preference key used to controls the "smart semicolon" detection
+	 */
+	public static final String JAVA_EDIT_SMARTSEMICOLON_DETECTION = "java.edit.smartSemicolonDetection.enabled";
+
 	/**
 	 * Preference key used to include getter, setter and builder/constructor when
 	 * finding references.
@@ -161,9 +188,22 @@ public class Preferences {
 	 */
 	public static final String GRADLE_USER_HOME = "java.import.gradle.user.home";
 	/**
+	 * Preference key to enable/disable Gradle Annotation Processing.
+	 */
+	public static final String GRADLE_ANNOTATION_PROCESSING_ENABLED = "java.import.gradle.annotationProcessing.enabled";
+	/**
 	 * Preference key to enable/disable maven importer.
 	 */
 	public static final String IMPORT_MAVEN_ENABLED = "java.import.maven.enabled";
+	/**
+	 * Preference key to enable/disable maven offline mode.
+	 */
+	public static final String IMPORT_MAVEN_OFFLINE = "java.import.maven.offline.enabled";
+
+	/**
+	 * Preference key to enable/disable maven test classpath flag.
+	 */
+	public static final String MAVEN_DISABLE_TEST_CLASSPATH_FLAG = "java.import.maven.disableTestClasspathFlag";
 	/**
 	 * Preference key to enable/disable downloading Maven source artifacts.
 	 */
@@ -276,10 +316,27 @@ public class Preferences {
 
 	public static final String MAVEN_NOT_COVERED_PLUGIN_EXECUTION_SEVERITY = "java.configuration.maven.notCoveredPluginExecutionSeverity";
 
+	public static final String MAVEN_DEFAULT_MOJO_EXECUTION_ACTION = "java.configuration.maven.defaultMojoExecutionAction";
+
 	/**
 	 * Preference key to enable/disable the 'completion'.
 	 */
 	public static final String COMPLETION_ENABLED_KEY = "java.completion.enabled";
+
+	/**
+	 * Preference key to enable/disable postfix completion.
+	 */
+	public static final String POSTFIX_COMPLETION_KEY = "java.completion.postfix.enabled";
+
+	/**
+	 * Preference key to specify whether to match case when completion.
+	 */
+	public static final String COMPLETION_MATCH_CASE_MODE_KEY = "java.completion.matchCase";
+
+	/**
+	 * Preference key to specify whether text edit of completion item can be lazily resolved.
+	 */
+	public static final String COMPLETION_LAZY_RESOLVE_TEXT_EDIT_ENABLED_KEY = "java.completion.lazyResolveTextEdit.enabled";
 
 	/**
 	 * Preference key to enable/disable the 'foldingRange'.
@@ -415,6 +472,9 @@ public class Preferences {
 	// Project encoding settings
 	public static final String JAVA_PROJECT_ENCODING = "java.project.encoding";
 
+	public static final String JAVA_TELEMETRY_ENABLED_KEY = "java.telemetry.enabled";
+
+	public static final String JAVA_EDIT_VALIDATE_ALL_OPEN_BUFFERS_ON_CHANGES = "java.edit.validateAllOpenBuffersOnChanges";
 	/**
 	 * The preferences for generating toString method.
 	 */
@@ -434,6 +494,27 @@ public class Preferences {
 	 */
 	public static final String JAVA_INLAYHINTS_PARAMETERNAMES_EXCLUSIONS = "java.inlayHints.parameterNames.exclusions";
 
+	public static final String JAVA_CODEACTION_SORTMEMBER_AVOIDVOLATILECHANGES = "java.codeAction.sortMembers.avoidVolatileChanges";
+
+	public static final String JAVA_JDT_LS_PROTOBUF_SUPPORT_ENABLED = "java.jdt.ls.protobufSupport.enabled";
+	public static final String JAVA_JDT_LS_ANDROID_SUPPORT_ENABLED = "java.jdt.ls.androidSupport.enabled";
+
+	public static final String JAVA_COMPILE_NULLANALYSIS_NONNULL = "java.compile.nullAnalysis.nonnull";
+	public static final String JAVA_COMPILE_NULLANALYSIS_NULLABLE = "java.compile.nullAnalysis.nullable";
+	public static final String JAVA_COMPILE_NULLANALYSIS_MODE = "java.compile.nullAnalysis.mode";
+
+	/**
+	 * Preference key for list of cleanups to run on save
+	 */
+	public static final String JAVA_CLEANUPS_ACTIONS_ON_SAVE = "java.cleanup.actionsOnSave";
+
+	public static final String JAVA_REFACTORING_EXTRACT_INTERFACE_REPLACE = "java.refactoring.extract.interface.replace";
+
+	/**
+	 * Preference key to enable/disable chain completion.
+	 */
+	public static final String CHAIN_COMPLETION_KEY = "java.completion.chain.enabled";
+
 	public static final String TEXT_DOCUMENT_FORMATTING = "textDocument/formatting";
 	public static final String TEXT_DOCUMENT_RANGE_FORMATTING = "textDocument/rangeFormatting";
 	public static final String TEXT_DOCUMENT_ON_TYPE_FORMATTING = "textDocument/onTypeFormatting";
@@ -447,6 +528,7 @@ public class Preferences {
 	public static final String COMPLETION = "textDocument/completion";
 	public static final String CODE_ACTION = "textDocument/codeAction";
 	public static final String DEFINITION = "textDocument/definition";
+	public static final String DECLARATION = "textDocument/declaration";
 	public static final String TYPEDEFINITION = "textDocument/typeDefinition";
 	public static final String HOVER = "textDocument/hover";
 	public static final String REFERENCES = "textDocument/references";
@@ -455,6 +537,7 @@ public class Preferences {
 	public static final String WORKSPACE_CHANGE_FOLDERS = "workspace/didChangeWorkspaceFolders";
 	public static final String IMPLEMENTATION = "textDocument/implementation";
 	public static final String SELECTION_RANGE = "textDocument/selectionRange";
+	public static final String INLAY_HINT = "textDocument/inlayHint";
 
 	public static final String FORMATTING_ID = UUID.randomUUID().toString();
 	public static final String FORMATTING_ON_TYPE_ID = UUID.randomUUID().toString();
@@ -468,6 +551,7 @@ public class Preferences {
 	public static final String COMPLETION_ID = UUID.randomUUID().toString();
 	public static final String CODE_ACTION_ID = UUID.randomUUID().toString();
 	public static final String DEFINITION_ID = UUID.randomUUID().toString();
+	public static final String DECLARATION_ID = UUID.randomUUID().toString();
 	public static final String TYPEDEFINITION_ID = UUID.randomUUID().toString();
 	public static final String HOVER_ID = UUID.randomUUID().toString();
 	public static final String REFERENCES_ID = UUID.randomUUID().toString();
@@ -477,8 +561,16 @@ public class Preferences {
 	public static final String WORKSPACE_WATCHED_FILES_ID = UUID.randomUUID().toString();
 	public static final String IMPLEMENTATION_ID = UUID.randomUUID().toString();
 	public static final String SELECTION_RANGE_ID = UUID.randomUUID().toString();
+	public static final String INLAY_HINT_ID = UUID.randomUUID().toString();
+
+	public static final Set<String> DISCOVERED_STATIC_IMPORTS = new LinkedHashSet<>();
+
 	private static final String GRADLE_OFFLINE_MODE = "gradle.offline.mode";
 	private static final int DEFAULT_TAB_SIZE = 4;
+
+	// <typeName, subString of classpath>
+	private static Map<String, List<String>> nonnullClasspathStorage = new HashMap<>();
+	private static Map<String, List<String>> nullableClasspathStorage = new HashMap<>();
 
 	private Map<String, Object> configuration;
 	private Severity incompleteClasspathSeverity;
@@ -493,7 +585,10 @@ public class Preferences {
 	private String gradleHome;
 	private String gradleJavaHome;
 	private String gradleUserHome;
+	private boolean gradleAnnotationProcessingEnabled;
 	private boolean importMavenEnabled;
+	private boolean mavenOffline;
+	private boolean mavenDisableTestClasspathFlag;
 	private boolean mavenDownloadSources;
 	private boolean eclipseDownloadSources;
 	private boolean mavenUpdateSnapshots;
@@ -508,10 +603,14 @@ public class Preferences {
 	private boolean executeCommandEnabled;
 	private boolean autobuildEnabled;
 	private boolean completionEnabled;
+	private boolean postfixCompletionEnabled;
+	private CompletionMatchCaseMode completionMatchCaseMode;
+	private boolean completionLazyResolveTextEditEnabled;
 	private boolean completionOverwrite;
 	private boolean foldingRangeEnabled;
 	private boolean selectionRangeEnabled;
-	private boolean guessMethodArguments;
+	private CompletionGuessMethodArgumentsMode guessMethodArguments;
+
 	private boolean javaFormatComments;
 	private boolean hashCodeEqualsTemplateUseJava7Objects;
 	private boolean hashCodeEqualsTemplateUseInstanceof;
@@ -525,12 +624,14 @@ public class Preferences {
 	private String codeGenerationInsertionLocation;
 	private List<String> preferredContentProviderIds;
 	private boolean includeAccessors;
+	private boolean smartSemicolonDetection;
 	private boolean includeDecompiledSources;
 	private boolean includeSourceMethodDeclarations;
 
 	private String mavenUserSettings;
 	private String mavenGlobalSettings;
 	private String mavenNotCoveredPluginExecutionSeverity;
+	private String mavenDefaultMojoExecutionAction;
 
 	private List<String> javaCompletionFavoriteMembers;
 	private List<?> gradleWrapperList;
@@ -562,6 +663,17 @@ public class Preferences {
 	private InlayHintsParameterMode inlayHintsParameterMode;
 	private List<String> inlayHintsExclusionList;
 	private ProjectEncodingMode projectEncoding;
+	private boolean avoidVolatileChanges;
+	private boolean protobufSupportEnabled;
+	private boolean androidSupportEnabled;
+	private List<String> nonnullTypes;
+	private List<String> nullableTypes;
+	private FeatureStatus nullAnalysisMode;
+	private List<String> cleanUpActionsOnSave;
+	private boolean extractInterfaceReplaceEnabled;
+	private boolean telemetryEnabled;
+	private boolean validateAllOpenBuffersOnChanges;
+	private boolean chainCompletionEnabled;
 
 	static {
 		JAVA_IMPORT_EXCLUSIONS_DEFAULT = new LinkedList<>();
@@ -593,7 +705,8 @@ public class Preferences {
 		JAVA_COMPLETION_FILTERED_TYPES_DEFAULT.add("org.graalvm.*");
 		JAVA_COMPLETION_FILTERED_TYPES_DEFAULT.add("sun.*");
 
-		JAVA_RESOURCE_FILTERS_DEFAULT = Arrays.asList("node_modules", ".git");
+		JAVA_RESOURCE_FILTERS_DEFAULT = Arrays.asList("node_modules", "\\.git");
+		initializeNullAnalysisClasspathStorage();
 	}
 
 	public static enum Severity {
@@ -725,7 +838,10 @@ public class Preferences {
 		gradleHome = null;
 		gradleJavaHome = null;
 		gradleUserHome = null;
+		gradleAnnotationProcessingEnabled = true;
 		importMavenEnabled = true;
+		mavenOffline = false;
+		mavenDisableTestClasspathFlag = false;
 		mavenDownloadSources = false;
 		eclipseDownloadSources = false;
 		mavenUpdateSnapshots = false;
@@ -741,10 +857,13 @@ public class Preferences {
 		executeCommandEnabled = true;
 		autobuildEnabled = true;
 		completionEnabled = true;
+		postfixCompletionEnabled = true;
+		completionMatchCaseMode = CompletionMatchCaseMode.OFF;
+		completionLazyResolveTextEditEnabled = false;
 		completionOverwrite = true;
 		foldingRangeEnabled = true;
 		selectionRangeEnabled = true;
-		guessMethodArguments = false;
+		guessMethodArguments = CompletionGuessMethodArgumentsMode.INSERT_PARAMETER_NAMES;
 		javaFormatComments = true;
 		hashCodeEqualsTemplateUseJava7Objects = false;
 		hashCodeEqualsTemplateUseInstanceof = false;
@@ -770,13 +889,59 @@ public class Preferences {
 		referencedLibraries = JAVA_PROJECT_REFERENCED_LIBRARIES_DEFAULT;
 		resourceFilters = JAVA_RESOURCE_FILTERS_DEFAULT;
 		includeAccessors = true;
+		smartSemicolonDetection = false;
 		includeDecompiledSources = true;
 		includeSourceMethodDeclarations = false;
 		insertSpaces = true;
 		tabSize = DEFAULT_TAB_SIZE;
-		mavenNotCoveredPluginExecutionSeverity = "ignore";
+		mavenNotCoveredPluginExecutionSeverity = IGNORE;
+		mavenDefaultMojoExecutionAction = IGNORE;
 		inlayHintsParameterMode = InlayHintsParameterMode.LITERALS;
 		projectEncoding = ProjectEncodingMode.IGNORE;
+		avoidVolatileChanges = true;
+		nonnullTypes = new ArrayList<>();
+		nullableTypes = new ArrayList<>();
+		nullAnalysisMode = FeatureStatus.disabled;
+		cleanUpActionsOnSave = new ArrayList<>();
+		extractInterfaceReplaceEnabled = false;
+		telemetryEnabled = false;
+		validateAllOpenBuffersOnChanges = true;
+	}
+
+	private static void initializeNullAnalysisClasspathStorage() {
+		// constructor classpath jar names with groupid + system slash + artifactid
+		// should support Maven style and Gradle style classpath
+		nonnullClasspathStorage.put("javax.annotation.Nonnull", getClasspathSubStringFromArtifact("com.google.code.findbugs:jsr305"));
+		nullableClasspathStorage.put("javax.annotation.Nullable", getClasspathSubStringFromArtifact("com.google.code.findbugs:jsr305"));
+
+		nonnullClasspathStorage.put("org.eclipse.jdt.annotation.NonNull", getClasspathSubStringFromArtifact("org.eclipse.jdt:org.eclipse.jdt.annotation"));
+		nullableClasspathStorage.put("org.eclipse.jdt.annotation.Nullable", getClasspathSubStringFromArtifact("org.eclipse.jdt:org.eclipse.jdt.annotation"));
+
+		nonnullClasspathStorage.put("org.springframework.lang.NonNull", getClasspathSubStringFromArtifact("org.springframework:spring-core"));
+		nullableClasspathStorage.put("org.springframework.lang.Nullable", getClasspathSubStringFromArtifact("org.springframework:spring-core"));
+
+		nonnullClasspathStorage.put("io.micrometer.core.lang.NonNull", getClasspathSubStringFromArtifact("io.micrometer:micrometer-core"));
+		nullableClasspathStorage.put("io.micrometer.core.lang.Nullable", getClasspathSubStringFromArtifact("io.micrometer:micrometer-core"));
+
+		nonnullClasspathStorage.put("org.jetbrains.annotations.NotNull", getClasspathSubStringFromArtifact("org.jetbrains:annotations"));
+		nullableClasspathStorage.put("org.jetbrains.annotations.Nullable", getClasspathSubStringFromArtifact("org.jetbrains:annotations"));
+	}
+
+	private static List<String> getClasspathSubStringFromArtifact(String artifact) {
+		// groupID:artifactID
+		String[] splitIds = artifact.split(":");
+		if (splitIds.length != 2) {
+			return new ArrayList<>();
+		}
+		String groupId = splitIds[0];
+		String artifactId = splitIds[1];
+		String gradleStyleClasspath = Paths.get(groupId, artifactId).toString();
+		String[] groupIdSplitByDot = groupId.split("\\.");
+		if (groupIdSplitByDot.length < 1) {
+			return new ArrayList<>();
+		}
+		String mavenStyleClasspath = Paths.get("", groupIdSplitByDot).resolve(artifactId).toString();
+		return new ArrayList<>(Arrays.asList(gradleStyleClasspath, mavenStyleClasspath));
 	}
 
 	/**
@@ -819,8 +984,14 @@ public class Preferences {
 		prefs.setGradleJavaHome(gradleJavaHome);
 		String gradleUserHome = getString(configuration, GRADLE_USER_HOME);
 		prefs.setGradleUserHome(gradleUserHome);
+		boolean gradleAnnotationProcessingEnabled = getBoolean(configuration, GRADLE_ANNOTATION_PROCESSING_ENABLED, true);
+		prefs.setGradleAnnotationProcessingEnabled(gradleAnnotationProcessingEnabled);
 		boolean importMavenEnabled = getBoolean(configuration, IMPORT_MAVEN_ENABLED, true);
 		prefs.setImportMavenEnabled(importMavenEnabled);
+		boolean mavenOffline = getBoolean(configuration, IMPORT_MAVEN_OFFLINE, false);
+		prefs.setMavenOffline(mavenOffline);
+		boolean mavenDisableTestClasspathFlag = getBoolean(configuration, MAVEN_DISABLE_TEST_CLASSPATH_FLAG, false);
+		prefs.setMavenDisableTestClasspathFlag(mavenDisableTestClasspathFlag);
 		boolean mavenDownloadSources = getBoolean(configuration, MAVEN_DOWNLOAD_SOURCES, false);
 		prefs.setMavenDownloadSources(mavenDownloadSources);
 		boolean eclipseDownloadSources = getBoolean(configuration, ECLIPSE_DOWNLOAD_SOURCES, false);
@@ -862,6 +1033,16 @@ public class Preferences {
 
 		boolean completionEnable = getBoolean(configuration, COMPLETION_ENABLED_KEY, true);
 		prefs.setCompletionEnabled(completionEnable);
+
+		boolean postfixEnabled = getBoolean(configuration, POSTFIX_COMPLETION_KEY, true);
+		prefs.setPostfixCompletionEnabled(postfixEnabled);
+
+		String completionMatchCaseMode = getString(configuration, COMPLETION_MATCH_CASE_MODE_KEY, null);
+		prefs.setCompletionMatchCaseMode(CompletionMatchCaseMode.fromString(completionMatchCaseMode, CompletionMatchCaseMode.OFF));
+
+		boolean completionLazyResolveTextEditEnabled = getBoolean(configuration, COMPLETION_LAZY_RESOLVE_TEXT_EDIT_ENABLED_KEY, false);
+		prefs.setCompletionLazyResolveTextEditEnabled(completionLazyResolveTextEditEnabled);
+
 		boolean completionOverwrite = getBoolean(configuration, JAVA_COMPLETION_OVERWRITE_KEY, true);
 		prefs.setCompletionOverwrite(completionOverwrite);
 
@@ -871,8 +1052,15 @@ public class Preferences {
 		boolean selectionRangeEnabled = getBoolean(configuration, SELECTIONRANGE_ENABLED_KEY, true);
 		prefs.setSelectionRangeEnabled(selectionRangeEnabled);
 
-		boolean guessMethodArguments = getBoolean(configuration, JAVA_COMPLETION_GUESS_METHOD_ARGUMENTS_KEY, false);
-		prefs.setGuessMethodArguments(guessMethodArguments);
+		Object guessMethodArguments = getValue(configuration, JAVA_COMPLETION_GUESS_METHOD_ARGUMENTS_KEY);
+		if (guessMethodArguments instanceof Boolean b) {
+			prefs.setGuessMethodArgumentsMode(b ? CompletionGuessMethodArgumentsMode.INSERT_BEST_GUESSED_ARGUMENTS :
+					CompletionGuessMethodArgumentsMode.INSERT_PARAMETER_NAMES);
+		} else {
+			String guessMethodArgumentsMode = getString(configuration, JAVA_COMPLETION_GUESS_METHOD_ARGUMENTS_KEY, null);
+			prefs.setGuessMethodArgumentsMode(CompletionGuessMethodArgumentsMode.fromString(guessMethodArgumentsMode,
+					CompletionGuessMethodArgumentsMode.INSERT_PARAMETER_NAMES));
+		}
 
 		boolean hashCodeEqualsTemplateUseJava7Objects = getBoolean(configuration, JAVA_CODEGENERATION_HASHCODEEQUALS_USEJAVA7OBJECTS, false);
 		prefs.setHashCodeEqualsTemplateUseJava7Objects(hashCodeEqualsTemplateUseJava7Objects);
@@ -946,8 +1134,11 @@ public class Preferences {
 		String mavenGlobalSettings = getString(configuration, MAVEN_GLOBAL_SETTINGS_KEY, null);
 		prefs.setMavenGlobalSettings(mavenGlobalSettings);
 
-		String mavenNotCoveredPluginExecution = getString(configuration, MAVEN_NOT_COVERED_PLUGIN_EXECUTION_SEVERITY, "ignore");
+		String mavenNotCoveredPluginExecution = getString(configuration, MAVEN_NOT_COVERED_PLUGIN_EXECUTION_SEVERITY, IGNORE);
 		prefs.setMavenNotCoveredPluginExecutionSeverity(mavenNotCoveredPluginExecution);
+
+		String mavenDefaultMojoExecution = getString(configuration, MAVEN_DEFAULT_MOJO_EXECUTION_ACTION, IGNORE);
+		prefs.setMavenDefaultMojoExecutionAction(mavenDefaultMojoExecution);
 
 		String sortOrder = getString(configuration, MEMBER_SORT_ORDER, null);
 		prefs.setMembersSortOrder(sortOrder);
@@ -964,7 +1155,7 @@ public class Preferences {
 		String settingsUrl = getString(configuration, JAVA_SETTINGS_URL);
 		prefs.setSettingsUrl(settingsUrl);
 
-		List<String> resourceFilters = getList(configuration, JAVA_RESOURCE_FILTERS);
+		List<String> resourceFilters = getList(configuration, JAVA_RESOURCE_FILTERS, JAVA_RESOURCE_FILTERS_DEFAULT);
 		prefs.setResourceFilters(resourceFilters);
 
 		String formatterProfileName = getString(configuration, JAVA_FORMATTER_PROFILE_NAME);
@@ -996,36 +1187,35 @@ public class Preferences {
 		Set<RuntimeEnvironment> runtimes = new HashSet<>();
 		boolean[] hasDefault = { false };
 		for (Object object : runtimeList) {
-			if (object instanceof Map) {
+			if (object instanceof Map<?, ?> map) {
 				RuntimeEnvironment runtime = new RuntimeEnvironment();
-				Map<?, ?> map = (Map<?, ?>) object;
 				map.forEach((k, v) -> {
-					if (k instanceof String) {
-						switch ((String) k) {
+					if (k instanceof String key) {
+						switch (key) {
 							case "name":
-								if (v instanceof String) {
-									runtime.setName((String) v);
+								if (v instanceof String value) {
+									runtime.setName(value);
 								}
 								break;
 							case "path":
-								if (v instanceof String) {
-									runtime.setPath(ResourceUtils.expandPath((String) v));
+								if (v instanceof String value) {
+									runtime.setPath(ResourceUtils.expandPath(value));
 								}
 								break;
 							case "javadoc":
-								if (v instanceof String) {
-									runtime.setJavadoc(ResourceUtils.expandPath((String) v));
+								if (v instanceof String value) {
+									runtime.setJavadoc(ResourceUtils.expandPath(value));
 								}
 								break;
 							case "sources":
-								if (v instanceof String) {
-									runtime.setSources(ResourceUtils.expandPath((String) v));
+								if (v instanceof String value) {
+									runtime.setSources(ResourceUtils.expandPath(value));
 								}
 								break;
 							case "default":
 								if (!hasDefault[0]) {
-									if (v instanceof Boolean) {
-										runtime.setDefault((Boolean) v);
+									if (v instanceof Boolean bool) {
+										runtime.setDefault(bool);
 									}
 									hasDefault[0] = true;
 								}
@@ -1054,6 +1244,8 @@ public class Preferences {
 		prefs.setTypeCommentTemplate(typeComment);
 		boolean includeAccessors = getBoolean(configuration, JAVA_REFERENCES_INCLUDE_ACCESSORS, true);
 		prefs.setIncludeAccessors(includeAccessors);
+		boolean smartSemicolonDetection = getBoolean(configuration, JAVA_EDIT_SMARTSEMICOLON_DETECTION, false);
+		prefs.setSmartSemicolonDetection(smartSemicolonDetection);
 		boolean includeDecompiledSources = getBoolean(configuration, JAVA_REFERENCES_INCLUDE_DECOMPILED_SOURCES, true);
 		prefs.setIncludeDecompiledSources(includeDecompiledSources);
 		boolean includeSourceMethodDeclarations = getBoolean(configuration, JAVA_SYMBOLS_INCLUDE_SOURCE_METHOD_DECLARATIONS, false);
@@ -1064,7 +1256,39 @@ public class Preferences {
 		prefs.setInlayHintsExclusionList(inlayHintsExclusionList);
 		String projectEncoding = getString(configuration, JAVA_PROJECT_ENCODING, null);
 		prefs.setProjectEncoding(ProjectEncodingMode.fromString(projectEncoding, ProjectEncodingMode.IGNORE));
+		boolean avoidVolatileChanges = getBoolean(configuration, JAVA_CODEACTION_SORTMEMBER_AVOIDVOLATILECHANGES, true);
+		prefs.setAvoidVolatileChanges(avoidVolatileChanges);
+		boolean protobufSupported = getBoolean(configuration, JAVA_JDT_LS_PROTOBUF_SUPPORT_ENABLED, false);
+		prefs.setProtobufSupportEnabled(protobufSupported);
+		boolean androidSupported = getBoolean(configuration, JAVA_JDT_LS_ANDROID_SUPPORT_ENABLED, false);
+		prefs.setAndroidSupportEnabled(androidSupported);
+		List<String> nonnullTypes = getList(configuration, JAVA_COMPILE_NULLANALYSIS_NONNULL, Collections.emptyList());
+		prefs.setNonnullTypes(nonnullTypes);
+		List<String> nullableTypes = getList(configuration, JAVA_COMPILE_NULLANALYSIS_NULLABLE, Collections.emptyList());
+		prefs.setNullableTypes(nullableTypes);
+		String nullAnalysisMode = getString(configuration, JAVA_COMPILE_NULLANALYSIS_MODE, null);
+		prefs.setNullAnalysisMode(FeatureStatus.fromString(nullAnalysisMode, FeatureStatus.disabled));
+		List<String> cleanupActionsOnSave = getList(configuration, JAVA_CLEANUPS_ACTIONS_ON_SAVE, Collections.emptyList());
+		prefs.setCleanUpActionsOnSave(cleanupActionsOnSave);
+		boolean extractInterfaceReplaceEnabled = getBoolean(configuration, JAVA_REFACTORING_EXTRACT_INTERFACE_REPLACE, false);
+		prefs.setExtractInterfaceReplaceEnabled(extractInterfaceReplaceEnabled);
+		boolean telemetryEnabled = getBoolean(configuration, JAVA_TELEMETRY_ENABLED_KEY, false);
+		prefs.setTelemetryEnabled(telemetryEnabled);
+		boolean validateAllOpenBuffers = getBoolean(configuration, JAVA_EDIT_VALIDATE_ALL_OPEN_BUFFERS_ON_CHANGES, true);
+		prefs.setValidateAllOpenBuffersOnChanges(validateAllOpenBuffers);
+		boolean chainCompletionEnabled = getBoolean(configuration, CHAIN_COMPLETION_KEY, false);
+		prefs.setChainCompletionEnabled(chainCompletionEnabled);
 		return prefs;
+	}
+
+	/**
+	 * Sets the new value of the enabled clean ups.
+	 *
+	 * @param enabledCleanUps
+	 *            the new list of enabled clean ups
+	 */
+	private void setCleanUpActionsOnSave(List<String> enabledCleanUps) {
+		this.cleanUpActionsOnSave = enabledCleanUps;
 	}
 
 	public Preferences setJavaHome(String javaHome) {
@@ -1113,7 +1337,19 @@ public class Preferences {
 	}
 
 	public Preferences setResourceFilters(List<String> resourceFilters) {
-		this.resourceFilters = resourceFilters == null ? new ArrayList<>() : resourceFilters;
+		if (resourceFilters != null) {
+			this.resourceFilters = resourceFilters.stream().filter((resource) -> {
+				try {
+					Pattern.compile(resource);
+					return true;
+				} catch (Exception e) {
+					JavaLanguageServerPlugin.logInfo("Invalid preference: " + Preferences.JAVA_RESOURCE_FILTERS + "=" + resource);
+					return false;
+				}
+			}).collect(Collectors.toList());
+		} else {
+			this.resourceFilters = Collections.emptyList();
+		}
 		return this;
 	}
 
@@ -1138,6 +1374,9 @@ public class Preferences {
 
 	public Preferences setJavaCompletionFavoriteMembers(List<String> javaCompletionFavoriteMembers) {
 		this.javaCompletionFavoriteMembers = (javaCompletionFavoriteMembers == null || javaCompletionFavoriteMembers.isEmpty()) ? JAVA_COMPLETION_FAVORITE_MEMBERS_DEFAULT : javaCompletionFavoriteMembers;
+		IEclipsePreferences prefs = DefaultScope.INSTANCE.getNode(JavaManipulation.getPreferenceNodeId());
+		String value = String.join(";", JavaLanguageServerPlugin.getPreferencesManager().getPreferences().getJavaCompletionFavoriteMembers());
+		prefs.put(JavaManipulationPlugin.CODEASSIST_FAVORITE_STATIC_MEMBERS, value);
 		return this;
 	}
 
@@ -1181,6 +1420,16 @@ public class Preferences {
 
 	public Preferences setImportMavenEnabled(boolean enabled) {
 		this.importMavenEnabled = enabled;
+		return this;
+	}
+
+	public Preferences setMavenOffline(boolean enabled) {
+		this.mavenOffline = enabled;
+		return this;
+	}
+
+	public Preferences setMavenDisableTestClasspathFlag(boolean enabled) {
+		this.mavenDisableTestClasspathFlag = enabled;
 		return this;
 	}
 
@@ -1228,6 +1477,30 @@ public class Preferences {
 		return this;
 	}
 
+	public boolean isPostfixCompletionEnabled() {
+		return postfixCompletionEnabled;
+	}
+
+	public void setPostfixCompletionEnabled(boolean postfixCompletionEnabled) {
+		this.postfixCompletionEnabled = postfixCompletionEnabled;
+	}
+
+	public CompletionMatchCaseMode getCompletionMatchCaseMode() {
+		return completionMatchCaseMode;
+	}
+
+	public void setCompletionMatchCaseMode(CompletionMatchCaseMode completionMatchCaseMode) {
+		this.completionMatchCaseMode = completionMatchCaseMode;
+	}
+
+	public boolean isCompletionLazyResolveTextEditEnabled() {
+		return completionLazyResolveTextEditEnabled;
+	}
+
+	public void setCompletionLazyResolveTextEditEnabled(boolean completionLazyResolveTextEditEnabled) {
+		this.completionLazyResolveTextEditEnabled = completionLazyResolveTextEditEnabled;
+	}
+
 	public Preferences setCompletionOverwrite(boolean completionOverwrite) {
 		this.completionOverwrite = completionOverwrite;
 		return this;
@@ -1243,7 +1516,7 @@ public class Preferences {
 		return this;
 	}
 
-	public Preferences setGuessMethodArguments(boolean guessMethodArguments) {
+	public Preferences setGuessMethodArgumentsMode(CompletionGuessMethodArgumentsMode guessMethodArguments) {
 		this.guessMethodArguments = guessMethodArguments;
 		return this;
 	}
@@ -1333,6 +1606,10 @@ public class Preferences {
 		return this;
 	}
 
+	public void setTelemetryEnabled(boolean telemetry) {
+		this.telemetryEnabled = telemetry;
+	}
+
 	public Preferences setMaxBuildCount(int maxConcurrentBuilds) {
 		this.parallelBuildsCount = maxConcurrentBuilds;
 		return this;
@@ -1351,7 +1628,9 @@ public class Preferences {
 	}
 
 	public String[] getJavaCompletionFavoriteMembers() {
-		return javaCompletionFavoriteMembers.toArray(new String[0]);
+		Set<String> favorites = new LinkedHashSet<>(javaCompletionFavoriteMembers);
+		favorites.addAll(DISCOVERED_STATIC_IMPORTS);
+		return favorites.toArray(new String[0]);
 	}
 
 	public String getJavaHome() {
@@ -1380,6 +1659,14 @@ public class Preferences {
 
 	public String getGradleUserHome() {
 		return gradleUserHome;
+	}
+
+	public boolean isGradleAnnotationProcessingEnabled() {
+		return gradleAnnotationProcessingEnabled;
+	}
+
+	public void setGradleAnnotationProcessingEnabled(boolean gradleAnnotationProcessingEnabled) {
+		this.gradleAnnotationProcessingEnabled = gradleAnnotationProcessingEnabled;
 	}
 
 	public String getFormatterUrl() {
@@ -1474,6 +1761,14 @@ public class Preferences {
 		return importMavenEnabled;
 	}
 
+	public boolean isMavenOffline() {
+		return mavenOffline;
+	}
+
+	public boolean isMavenDisableTestClasspathFlag() {
+		return mavenDisableTestClasspathFlag;
+	}
+
 	public boolean isMavenDownloadSources() {
 		return mavenDownloadSources;
 	}
@@ -1542,7 +1837,7 @@ public class Preferences {
 		return selectionRangeEnabled;
 	}
 
-	public boolean isGuessMethodArguments() {
+	public CompletionGuessMethodArgumentsMode getGuessMethodArgumentsMode() {
 		return guessMethodArguments;
 	}
 
@@ -1612,8 +1907,31 @@ public class Preferences {
 		return mavenNotCoveredPluginExecutionSeverity;
 	}
 
-	public void setMavenNotCoveredPluginExecutionSeverity(String mavenNotCoveredPluginExecutionSeverity) {
+	public Preferences setMavenNotCoveredPluginExecutionSeverity(String mavenNotCoveredPluginExecutionSeverity) {
 		this.mavenNotCoveredPluginExecutionSeverity = mavenNotCoveredPluginExecutionSeverity;
+		return this;
+	}
+
+	public String getMavenDefaultMojoExecutionAction() {
+		return mavenDefaultMojoExecutionAction;
+	}
+
+	public Preferences setMavenDefaultMojoExecutionAction(String mavenDefaultMojoExecutionAction) {
+		if (mavenDefaultMojoExecutionAction == null) {
+			mavenDefaultMojoExecutionAction = IGNORE;
+		}
+		switch (mavenDefaultMojoExecutionAction) {
+			case IGNORE:
+			case "execute":
+			case "warn":
+			case "error":
+				break;
+			default:
+				mavenDefaultMojoExecutionAction = IGNORE;
+				break;
+		}
+		this.mavenDefaultMojoExecutionAction = mavenDefaultMojoExecutionAction;
+		return this;
 	}
 
 	public String[] getImportOrder() {
@@ -1774,6 +2092,16 @@ public class Preferences {
 	public boolean isIncludeAccessors() {
 		return this.includeAccessors;
 	}
+
+	public Preferences setSmartSemicolonDetection(boolean smartSemicolonDetection) {
+		this.smartSemicolonDetection = smartSemicolonDetection;
+		return this;
+	}
+
+	public boolean isSmartSemicolonDetection() {
+		return this.smartSemicolonDetection;
+	}
+
 	public boolean isEclipseDownloadSources() {
 		return eclipseDownloadSources;
 	}
@@ -1876,4 +2204,262 @@ public class Preferences {
 		return this.projectEncoding;
 	}
 
+	public void setAvoidVolatileChanges(boolean avoidVolatileChanges) {
+		this.avoidVolatileChanges = avoidVolatileChanges;
+	}
+
+	public boolean getAvoidVolatileChanges() {
+		return this.avoidVolatileChanges;
+	}
+
+	public boolean isProtobufSupportEnabled() {
+		return protobufSupportEnabled;
+	}
+
+	public void setProtobufSupportEnabled(boolean protobufSupportEnabled) {
+		this.protobufSupportEnabled = protobufSupportEnabled;
+	}
+
+	public boolean isAndroidSupportEnabled() {
+		return this.androidSupportEnabled;
+	}
+
+	public void setAndroidSupportEnabled(boolean androidSupportEnabled) {
+		this.androidSupportEnabled = androidSupportEnabled;
+	}
+
+	public List<String> getNonnullTypes() {
+		return this.nonnullTypes;
+	}
+
+	public void setNonnullTypes(List<String> nonnullTypes) {
+		this.nonnullTypes = nonnullTypes;
+	}
+
+	public List<String> getNullableTypes() {
+		return this.nullableTypes;
+	}
+
+	public void setNullableTypes(List<String> nullableTypes) {
+		this.nullableTypes = nullableTypes;
+	}
+
+	public void setNullAnalysisMode(FeatureStatus nullAnalysisMode) {
+		this.nullAnalysisMode = nullAnalysisMode;
+	}
+
+	public FeatureStatus getNullAnalysisMode() {
+		return this.nullAnalysisMode;
+	}
+
+	public void setExtractInterfaceReplaceEnabled(boolean extractInterfaceReplaceEnabled) {
+		this.extractInterfaceReplaceEnabled = extractInterfaceReplaceEnabled;
+	}
+
+	public boolean getExtractInterfaceReplaceEnabled() {
+		return this.extractInterfaceReplaceEnabled;
+	}
+
+	public void setChainCompletionEnabled(boolean chainCompletionEnabled) {
+		this.chainCompletionEnabled = chainCompletionEnabled;
+	}
+
+	public boolean isChainCompletionEnabled() {
+		return this.chainCompletionEnabled;
+	}
+
+	/**
+	 * update the null analysis options of all projects based on the null analysis mode
+	 * Returns the list of enabled clean ups.
+	 *
+	 * @return the list of enabled clean ups
+	 */
+	public List<String> getCleanUpActionsOnSave() {
+		return this.cleanUpActionsOnSave;
+	}
+
+	/**
+	 * @return whether the options are changed or not
+	 */
+	public boolean updateAnnotationNullAnalysisOptions() {
+		switch (this.getNullAnalysisMode()) {
+			case automatic:
+				return this.updateAnnotationNullAnalysisOptions(true);
+			case interactive:
+				if (this.hasAnnotationNullAnalysisTypes()) {
+					String cmd = "java.compile.nullAnalysis.setMode";
+					ActionableNotification updateNullAnalysisStatusNotification = new ActionableNotification().withSeverity(MessageType.Info)
+							.withMessage("Null annotation types have been detected in the project. Do you wish to enable null analysis for this project?")
+							.withCommands(Arrays.asList(new Command("Enable", cmd, Arrays.asList(FeatureStatus.automatic)), new Command("Disable", cmd, Arrays.asList(FeatureStatus.disabled))));
+					JavaLanguageServerPlugin.getProjectsManager().getConnection().sendActionableNotification(updateNullAnalysisStatusNotification);
+				}
+				return false;
+			default:
+				return this.updateAnnotationNullAnalysisOptions(false);
+		}
+	}
+
+	private boolean updateAnnotationNullAnalysisOptions(boolean enabled) {
+		boolean isChanged = false;
+		for (IJavaProject javaProject : ProjectUtils.getJavaProjects()) {
+			isChanged |= updateAnnotationNullAnalysisOptions(javaProject, enabled);
+		}
+		return isChanged;
+	}
+
+	/**
+	 * update the null analysis options of given project
+	 * @param javaProject the java project to update the annotation-based null analysis options
+	 * @param enabled specific whether the null analysis is enabled
+	 * @return whether the options of the given project are changed or not
+	 */
+	public boolean updateAnnotationNullAnalysisOptions(IJavaProject javaProject, boolean enabled) {
+		if (javaProject.getElementName().equals(ProjectsManager.DEFAULT_PROJECT_NAME)) {
+			return false;
+		}
+		Map<String, String> projectInheritOptions = javaProject.getOptions(true);
+		if (projectInheritOptions == null) {
+			return false;
+		}
+		Map<String, String> projectNullAnalysisOptions;
+		if (enabled) {
+			String nonnullType = getAnnotationType(javaProject, this.nonnullTypes, nonnullClasspathStorage);
+			String nullableType = getAnnotationType(javaProject, this.nullableTypes, nullableClasspathStorage);
+			projectNullAnalysisOptions = generateProjectNullAnalysisOptions(nonnullType, nullableType);
+		} else {
+			projectNullAnalysisOptions = generateProjectNullAnalysisOptions(null, null);
+		}
+		boolean shouldUpdate = !projectNullAnalysisOptions.entrySet().stream().allMatch(e -> e.getValue().equals(projectInheritOptions.get(e.getKey())));
+		if (shouldUpdate) {
+			// get existing project options
+			Map<String, String> projectOptions = javaProject.getOptions(false);
+			if (projectOptions != null) {
+				projectOptions.putAll(projectNullAnalysisOptions);
+				javaProject.setOptions(projectOptions);
+			} else {
+				return false;
+			}
+		}
+		return shouldUpdate;
+	}
+
+	private boolean hasAnnotationNullAnalysisTypes() {
+		if (this.nonnullTypes.isEmpty() && this.nullableTypes.isEmpty()) {
+			return false;
+		}
+		for (IJavaProject javaProject : ProjectUtils.getJavaProjects()) {
+			if (javaProject.getElementName().equals(ProjectsManager.DEFAULT_PROJECT_NAME)) {
+				continue;
+			}
+			String nonnullType = getAnnotationType(javaProject, this.nonnullTypes, nonnullClasspathStorage);
+			String nullableType = getAnnotationType(javaProject, this.nullableTypes, nullableClasspathStorage);
+			if (nonnullType != null || nullableType != null) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private String getAnnotationType(IJavaProject javaProject, List<String> annotationTypes, Map<String, List<String>> classpathStorage) {
+		if (!annotationTypes.isEmpty()) {
+			try {
+				ClasspathResult result = ProjectCommand.getClasspathsFromJavaProject(javaProject, new ProjectCommand.ClasspathOptions());
+				for (String annotationType : annotationTypes) {
+					if (classpathStorage.keySet().contains(annotationType)) {
+						// for known types, check the classpath to achieve a better performance
+						for (String classpath : result.classpaths) {
+							IClasspathEntry classpathEntry = javaProject.getClasspathEntryFor(new Path(classpath));
+							if (classpathEntry != null && classpathEntry.isTest()) {
+								continue;
+							}
+							for (String classpathSubString : classpathStorage.get(annotationType)) {
+								if (classpath.contains(classpathSubString)) {
+									return annotationType;
+								}
+							}
+						}
+						String aType = findTypeInProject(javaProject, annotationType, classpathStorage);
+						if (aType != null) {
+							return aType;
+						}
+					} else {
+						// for unknown types, try to find type in the project
+						try {
+							String aType = findTypeInProject(javaProject, annotationType, classpathStorage);
+							if (aType != null) {
+								return aType;
+							}
+						} catch (JavaModelException e) {
+							continue;
+						}
+					}
+				}
+			} catch (CoreException | URISyntaxException e) {
+				JavaLanguageServerPlugin.logException(e);
+			}
+		}
+		return null;
+	}
+
+	private String findTypeInProject(IJavaProject javaProject, String annotationType, Map<String, List<String>> classpathStorage) throws JavaModelException {
+		IType type = javaProject.findType(annotationType);
+		if (type != null) {
+			IJavaElement fragmentRoot = type.getAncestor(IJavaElement.PACKAGE_FRAGMENT_ROOT);
+			IClasspathEntry classpathEntry = javaProject.getClasspathEntryFor(fragmentRoot.getPath());
+			if (classpathEntry == null || !classpathEntry.isTest()) {
+				String classpath = fragmentRoot.getPath().toOSString();
+				if (classpathStorage.containsKey(annotationType)) {
+					classpathStorage.get(annotationType).add(classpath);
+				} else {
+					classpathStorage.put(annotationType, new ArrayList<>(Arrays.asList(classpath)));
+				}
+				return annotationType;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * generates the null analysis options of the given nonnull type and nullable type
+	 * @param nonnullType the given nonnull type
+	 * @param nullableType the given nullable type
+	 * @return the map contains the null analysis options, if both given types are null, will return default null analysis options
+	 */
+	private Map<String, String> generateProjectNullAnalysisOptions(String nonnullType, String nullableType) {
+		Map<String, String> options = new HashMap<>();
+		if (nonnullType == null && nullableType == null) {
+			options.put(JavaCore.COMPILER_ANNOTATION_NULL_ANALYSIS, "disabled");
+			// set default values
+			Hashtable<String, String> defaultOptions = JavaCore.getDefaultOptions();
+			options.put(JavaCore.COMPILER_NONNULL_ANNOTATION_NAME, defaultOptions.get(JavaCore.COMPILER_NONNULL_ANNOTATION_NAME));
+			options.put(JavaCore.COMPILER_NULLABLE_ANNOTATION_NAME, defaultOptions.get(JavaCore.COMPILER_NULLABLE_ANNOTATION_NAME));
+			options.put(JavaCore.COMPILER_PB_NULL_REFERENCE, defaultOptions.get(JavaCore.COMPILER_PB_NULL_REFERENCE));
+			options.put(JavaCore.COMPILER_PB_POTENTIAL_NULL_REFERENCE, defaultOptions.get(JavaCore.COMPILER_PB_POTENTIAL_NULL_REFERENCE));
+			options.put(JavaCore.COMPILER_PB_NULL_SPECIFICATION_VIOLATION, defaultOptions.get(JavaCore.COMPILER_PB_NULL_SPECIFICATION_VIOLATION));
+			options.put(JavaCore.COMPILER_PB_NULL_ANNOTATION_INFERENCE_CONFLICT, defaultOptions.get(JavaCore.COMPILER_PB_NULL_ANNOTATION_INFERENCE_CONFLICT));
+			options.put(JavaCore.COMPILER_PB_SYNTACTIC_NULL_ANALYSIS_FOR_FIELDS, defaultOptions.get(JavaCore.COMPILER_PB_SYNTACTIC_NULL_ANALYSIS_FOR_FIELDS));
+		} else {
+			options.put(JavaCore.COMPILER_ANNOTATION_NULL_ANALYSIS, "enabled");
+			options.put(JavaCore.COMPILER_NONNULL_ANNOTATION_NAME, nonnullType != null ? nonnullType : "");
+			options.put(JavaCore.COMPILER_NULLABLE_ANNOTATION_NAME, nullableType != null ? nullableType : "");
+			options.put(JavaCore.COMPILER_PB_NULL_REFERENCE, "warning");
+			options.put(JavaCore.COMPILER_PB_POTENTIAL_NULL_REFERENCE, "warning");
+			options.put(JavaCore.COMPILER_PB_NULL_SPECIFICATION_VIOLATION, "warning");
+			options.put(JavaCore.COMPILER_PB_NULL_ANNOTATION_INFERENCE_CONFLICT, "warning");
+			options.put(JavaCore.COMPILER_PB_SYNTACTIC_NULL_ANALYSIS_FOR_FIELDS, JavaCore.ENABLED);
+		}
+		return options;
+	}
+
+	public boolean isTelemetryEnabled() {
+		return telemetryEnabled;
+	}
+
+	public boolean isValidateAllOpenBuffersOnChanges() {
+		return validateAllOpenBuffersOnChanges;
+	}
+
+	public void setValidateAllOpenBuffersOnChanges(boolean validateAllOpenBuffersOnChanges) {
+		this.validateAllOpenBuffersOnChanges = validateAllOpenBuffersOnChanges;
+	}
 }

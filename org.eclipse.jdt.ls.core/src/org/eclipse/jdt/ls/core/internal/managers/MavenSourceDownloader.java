@@ -46,6 +46,7 @@ public class MavenSourceDownloader implements ISourceDownloader {
 
 	private static Cache<String, Boolean> downloadRequestsCache = CacheBuilder.newBuilder().maximumSize(100).expireAfterWrite(1, TimeUnit.HOURS).build();
 	private static final int MAX_TIME_MILLIS = 3000;
+	private static Cache<IPackageFragmentRoot, Integer> downloadStateCache = CacheBuilder.newBuilder().maximumSize(100).build();
 
 	@Override
 	public void discoverSource(IClassFile classFile, IProgressMonitor monitor) throws CoreException {
@@ -55,8 +56,7 @@ public class MavenSourceDownloader implements ISourceDownloader {
 		IJavaElement element = classFile;
 		while (element.getParent() != null) {
 			element = element.getParent();
-			if (element instanceof IPackageFragmentRoot) {
-				final IPackageFragmentRoot fragment = (IPackageFragmentRoot) element;
+			if (element instanceof IPackageFragmentRoot fragment) {
 				IPath attachmentPath = fragment.getSourceAttachmentPath();
 				if (attachmentPath != null && !attachmentPath.isEmpty() && attachmentPath.toFile().exists()) {
 					break;
@@ -78,24 +78,25 @@ public class MavenSourceDownloader implements ISourceDownloader {
 							artifact = new MavenCentralIdentifier().identify(path, monitor);
 						}
 						if (artifact != null) {
+							downloadStateCache.put(fragment, DOWNLOAD_REQUESTED);
 							if (!ProjectUtils.isMavenProject(element.getJavaProject().getProject())) {
 								// see https://github.com/eclipse-m2e/m2e-core/commit/b547ecc358c990e182a5eaf8d36f121e43f4a8c9#diff-3967743078be6a24ba1e3ec28bfc22bdf2c88a740695411f6d20e2444fef042fR943
 								long lastModified;
 								try {
-									File artifactFile = DependencyUtil.getArtifact(artifact.getGroupId(), artifact.getArtifactId(), artifact.getVersion(), artifact.getClassifier());
+									File artifactFile = DependencyUtil.getArtifact(artifact.groupId(), artifact.artifactId(), artifact.version(), artifact.classifier());
 									lastModified = artifactFile.lastModified();
 								} catch (FileNotFoundException | CoreException e1) {
 									lastModified = -1;
 								}
 								if (lastModified > -1) {
 									try {
-										File sources = DependencyUtil.getSources(artifact.getGroupId(), artifact.getArtifactId(), artifact.getVersion());
+										File sources = DependencyUtil.getSources(artifact.groupId(), artifact.artifactId(), artifact.version());
 										sources.setLastModified(lastModified - 1);
 									} catch (FileNotFoundException | CoreException e) {
 										// ignore
 									}
 									try {
-										File javadoc = DependencyUtil.getJavadoc(artifact.getGroupId(), artifact.getArtifactId(), artifact.getVersion());
+										File javadoc = DependencyUtil.getJavadoc(artifact.groupId(), artifact.artifactId(), artifact.version());
 										javadoc.setLastModified(lastModified - 1);
 									} catch (FileNotFoundException | CoreException e) {
 										// ignore
@@ -105,6 +106,9 @@ public class MavenSourceDownloader implements ISourceDownloader {
 							BuildPathManager buildpathManager = (BuildPathManager) MavenJdtPlugin.getDefault().getBuildpathManager();
 							buildpathManager.scheduleDownload(fragment, artifact, true, true);
 							JobHelpers.waitForDownloadSourcesJobs(MAX_TIME_MILLIS);
+							if (downloadStateCache.getIfPresent(fragment) != null) {
+								downloadStateCache.put(fragment, DOWNLOAD_WAIT_JOB_DONE);
+							}
 						}
 					}
 					break;
@@ -113,4 +117,14 @@ public class MavenSourceDownloader implements ISourceDownloader {
 		}
 	}
 
+	@Override
+	public int getDownloadStatus(IPackageFragmentRoot root) {
+		return downloadStateCache.getIfPresent(root) == null ?
+			DOWNLOAD_NONE : downloadStateCache.getIfPresent(root);
+	}
+
+	@Override
+	public void clearDownloadStatus(IPackageFragmentRoot root) {
+		downloadStateCache.invalidate(root);
+	}
 }

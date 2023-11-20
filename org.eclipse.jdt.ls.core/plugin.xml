@@ -13,7 +13,7 @@
             thread="main"
             visible="true">
          <run
-               class="org.eclipse.jdt.ls.core.internal.LanguageServer">
+               class="org.eclipse.jdt.ls.core.internal.LanguageServerApplication">
          </run>
       </application>
    </extension>
@@ -43,8 +43,8 @@
    <extension
          point="org.eclipse.jdt.ls.core.contentProvider">
       <contentProvider
-            class="org.eclipse.jdt.ls.core.internal.DisassemblerContentProvider"
-            id="disassemblerContentProvider"
+            class="org.eclipse.jdt.ls.core.internal.decompiler.FernFlowerDecompiler"
+            id="fernflowerContentProvider"
             priority="2147483647"
             uriPattern=".+\.class.*">
       </contentProvider>
@@ -57,6 +57,9 @@
             </command>
             <command
                   id="java.edit.stringFormatting">
+            </command>
+            <command
+                  id="java.edit.handlePasteEvent">
             </command>
             <command
                   id="java.project.updateSourceAttachment">
@@ -104,8 +107,26 @@
                   id="java.project.upgradeGradle">
             </command>
             <command
-            	  id="java.project.resolveWorkspaceSymbol">
-    	    </command>
+                  id="java.project.resolveWorkspaceSymbol">
+            </command>
+            <command
+                  id="java.protobuf.generateSources">
+            </command>
+            <command
+                  id="java.project.createModuleInfo">
+            </command>
+            <command
+                  id="java.reloadBundles">
+            </command>
+            <command
+                  id="java.completion.onDidSelect">
+            </command>
+            <command
+                  id="java.decompile">
+            </command>
+             <command
+                  id="java.edit.smartSemicolonDetection">
+            </command>
       </delegateCommandHandler>
    </extension>
    <extension
@@ -171,9 +192,22 @@
             class="org.eclipse.jdt.ls.core.internal.javafx.FXLibraryLocationResolver">
       </resolver>
    </extension>
-   <extension id="org.eclipse.jdt.ls.filesystem" name="JDT LS File System" point="org.eclipse.core.filesystem.filesystems">
-      <filesystem scheme="file">
-         <run class="org.eclipse.jdt.ls.core.internal.filesystem.JLSFileSystem"/>
-      </filesystem>
+   <extension
+      id="org.eclipse.jdt.ls.buildFileMarker"
+      point="org.eclipse.core.resources.markers">
+      <super type="org.eclipse.core.resources.problemmarker"/>
+   </extension>
+   <extension
+      id="org.eclipse.jdt.ls.unmanagedFolderNature"
+      name="Unmanaged Folder"
+      point="org.eclipse.core.resources.natures">
+      <runtime>
+         <run
+            class="org.eclipse.jdt.ls.core.internal.managers.UnmanagedFolderNature">
+         </run>
+      </runtime>
+      <requires-nature
+         id="org.eclipse.jdt.core.javanature">
+      </requires-nature>
    </extension>
 </plugin>

@@ -61,11 +61,13 @@ import org.eclipse.jdt.internal.core.manipulation.StubUtility;
 import org.eclipse.jdt.internal.core.manipulation.util.BasicElementLabels;
 import org.eclipse.jdt.internal.core.refactoring.descriptors.RefactoringSignatureDescriptorFactory;
 import org.eclipse.jdt.internal.corext.refactoring.Checks;
+import org.eclipse.jdt.internal.corext.refactoring.CuCollectingSearchRequestor;
 import org.eclipse.jdt.internal.corext.refactoring.JDTRefactoringDescriptorComment;
 import org.eclipse.jdt.internal.corext.refactoring.JavaRefactoringArguments;
 import org.eclipse.jdt.internal.corext.refactoring.JavaRefactoringDescriptorUtil;
 import org.eclipse.jdt.internal.corext.refactoring.RefactoringCoreMessages;
 import org.eclipse.jdt.internal.corext.refactoring.RefactoringScopeFactory;
+import org.eclipse.jdt.internal.corext.refactoring.RefactoringSearchEngine;
 import org.eclipse.jdt.internal.corext.refactoring.SearchResultGroup;
 import org.eclipse.jdt.internal.corext.refactoring.base.ReferencesInBinaryContext;
 import org.eclipse.jdt.internal.corext.refactoring.changes.DynamicValidationRefactoringChange;
@@ -84,13 +86,12 @@ import org.eclipse.jdt.internal.corext.util.Resources;
 import org.eclipse.jdt.internal.corext.util.SearchUtils;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringAvailabilityTester;
-import org.eclipse.jdt.ls.core.internal.corext.refactoring.RefactoringSearchEngine;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.changes.RenamePackageChange;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.rename.RenamePackageProcessor.ImportsManager.ImportChange;
 import org.eclipse.jdt.ls.core.internal.corext.refactoring.util.QualifiedNameFinder;
 import org.eclipse.jdt.ls.core.internal.corext.util.Changes;
 import org.eclipse.jdt.ls.core.internal.corext.util.QualifiedNameSearchResult;
-import org.eclipse.jdt.ls.core.internal.hover.JavaElementLabels;
+import org.eclipse.jdt.internal.core.manipulation.JavaElementLabelsCore;
 import org.eclipse.ltk.core.refactoring.Change;
 import org.eclipse.ltk.core.refactoring.CompositeChange;
 import org.eclipse.ltk.core.refactoring.IResourceMapper;
@@ -577,7 +578,7 @@ public class RenamePackageProcessor extends JavaRenameProcessor implements
 		Set<String> topLevelTypeNames= getTopLevelTypeNames();
 		for (IPackageFragmentRoot root : fPackage.getJavaProject().getPackageFragmentRoots()) {
 			if (! isPackageNameOkInRoot(newName, root)) {
-				String rootLabel = JavaElementLabels.getElementLabel(root, JavaElementLabels.ALL_DEFAULT);
+				String rootLabel = JavaElementLabelsCore.getElementLabel(root, JavaElementLabelsCore.ALL_DEFAULT);
 				String newPackageName= BasicElementLabels.getJavaElementName(getNewElementName());
 				String message= Messages.format(RefactoringCoreMessages.RenamePackageRefactoring_aleady_exists, new Object[]{ newPackageName, rootLabel});
 				status.merge(RefactoringStatus.createWarningStatus(message));
@@ -681,7 +682,7 @@ public class RenamePackageProcessor extends JavaRenameProcessor implements
 	}
 
 	private static String getElementLabel(IJavaElement javaElement) {
-		return JavaElementLabels.getElementLabel(javaElement, JavaElementLabels.ALL_DEFAULT);
+		return JavaElementLabelsCore.getElementLabel(javaElement, JavaElementLabelsCore.ALL_DEFAULT);
 	}
 
 	@Override

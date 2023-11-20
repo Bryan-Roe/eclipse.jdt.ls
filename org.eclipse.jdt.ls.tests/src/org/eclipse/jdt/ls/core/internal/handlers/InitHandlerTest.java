@@ -25,6 +25,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -38,6 +39,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.apache.commons.io.FileUtils;
@@ -78,6 +80,7 @@ import org.eclipse.lsp4j.FileSystemWatcher;
 import org.eclipse.lsp4j.InitializeParams;
 import org.eclipse.lsp4j.InitializeResult;
 import org.eclipse.lsp4j.InitializedParams;
+import org.eclipse.lsp4j.RelativePattern;
 import org.eclipse.lsp4j.SynchronizationCapabilities;
 import org.eclipse.lsp4j.TextDocumentClientCapabilities;
 import org.eclipse.lsp4j.TextDocumentSyncKind;
@@ -91,6 +94,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
 
 /**
@@ -131,7 +135,7 @@ public class InitHandlerTest extends AbstractProjectsManagerBasedTest {
 
 	@Test
 	public void testExecuteCommandProvider() throws Exception {
-		when(commandHandler.getNonStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd3", "cmd4")));
+		Mockito.lenient().when(commandHandler.getNonStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd3", "cmd4")));
 		when(commandHandler.getAllCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd3", "cmd4")));
 
 		ClientPreferences mockCapabilies = mock(ClientPreferences.class);
@@ -153,9 +157,9 @@ public class InitHandlerTest extends AbstractProjectsManagerBasedTest {
 
 	@Test
 	public void testStaticCommandWithDynamicRegistration() throws Exception {
-		when(commandHandler.getAllCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd1", "cmd2", "cmd3", "cmd4")));
-		when(commandHandler.getStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd1", "cmd2")));
-		when(commandHandler.getNonStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd3", "cmd4")));
+		Mockito.lenient().when(commandHandler.getAllCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd1", "cmd2", "cmd3", "cmd4")));
+		Mockito.lenient().when(commandHandler.getStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd1", "cmd2")));
+		Mockito.lenient().when(commandHandler.getNonStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd3", "cmd4")));
 
 		ClientPreferences mockCapabilies = mock(ClientPreferences.class);
 		when(mockCapabilies.isExecuteCommandDynamicRegistrationSupported()).thenReturn(Boolean.TRUE);
@@ -174,8 +178,8 @@ public class InitHandlerTest extends AbstractProjectsManagerBasedTest {
 	@Test
 	public void testStaticCommandWithoutDynamicRegistration() throws Exception {
 		when(commandHandler.getAllCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd1", "cmd2", "cmd3", "cmd4")));
-		when(commandHandler.getStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd1", "cmd2")));
-		when(commandHandler.getNonStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd3", "cmd4")));
+		Mockito.lenient().when(commandHandler.getStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd1", "cmd2")));
+		Mockito.lenient().when(commandHandler.getNonStaticCommands()).thenReturn(new HashSet<>(Arrays.asList("cmd3", "cmd4")));
 
 		ClientPreferences mockCapabilies = mock(ClientPreferences.class);
 		when(mockCapabilies.isExecuteCommandDynamicRegistrationSupported()).thenReturn(Boolean.FALSE);
@@ -315,40 +319,35 @@ public class InitHandlerTest extends AbstractProjectsManagerBasedTest {
 		// 8 basic + 3 project roots
 		assertEquals("Unexpected watchers:\n" + toString(watchers), 12, watchers.size());
 		List<FileSystemWatcher> projectWatchers = watchers.subList(9, 12);
-		assertTrue(projectWatchers.get(0).getGlobPattern().endsWith("/TestProject"));
+		assertTrue(projectWatchers.get(0).getGlobPattern().map(Function.identity(), RelativePattern::getPattern).endsWith("/TestProject"));
 		assertTrue(WatchKind.Delete == projectWatchers.get(0).getKind());
-		assertTrue(projectWatchers.get(1).getGlobPattern().endsWith("/maven/salut"));
-		assertTrue(projectWatchers.get(2).getGlobPattern().endsWith("/gradle/simple-gradle"));
+		assertTrue(projectWatchers.get(1).getGlobPattern().map(Function.identity(), RelativePattern::getPattern).endsWith("/maven/salut"));
+		assertTrue(projectWatchers.get(2).getGlobPattern().map(Function.identity(), RelativePattern::getPattern).endsWith("/gradle/simple-gradle"));
 
 		watchers = watchers.subList(0, 9);
-		Collections.sort(watchers, new Comparator<FileSystemWatcher>() {
-
-			@Override
-			public int compare(FileSystemWatcher o1, FileSystemWatcher o2) {
-				return o1.getGlobPattern().compareTo(o2.getGlobPattern());
-			}
-		});
-		assertEquals("**/*.gradle", watchers.get(0).getGlobPattern());
-		assertEquals("**/*.gradle.kts", watchers.get(1).getGlobPattern());
-		assertEquals("**/*.java", watchers.get(2).getGlobPattern());
-		assertEquals("**/.classpath", watchers.get(3).getGlobPattern());
-		assertEquals("**/.project", watchers.get(4).getGlobPattern());
-		assertEquals("**/.settings/*.prefs", watchers.get(5).getGlobPattern());
-		assertEquals("**/gradle.properties", watchers.get(6).getGlobPattern());
-		assertEquals("**/pom.xml", watchers.get(7).getGlobPattern());
-		assertEquals("**/src/**", watchers.get(8).getGlobPattern());
+		Collections.sort(watchers, Comparator.comparing(fileSystemWatcher -> fileSystemWatcher.getGlobPattern().map(Function.identity(), RelativePattern::getPattern)));
+		assertEquals("**/*.gradle", watchers.get(0).getGlobPattern().map(Function.identity(), RelativePattern::getPattern));
+		assertEquals("**/*.gradle.kts", watchers.get(1).getGlobPattern().map(Function.identity(), RelativePattern::getPattern));
+		assertEquals("**/*.java", watchers.get(2).getGlobPattern().map(Function.identity(), RelativePattern::getPattern));
+		assertEquals("**/.classpath", watchers.get(3).getGlobPattern().map(Function.identity(), RelativePattern::getPattern));
+		assertEquals("**/.project", watchers.get(4).getGlobPattern().map(Function.identity(), RelativePattern::getPattern));
+		assertEquals("**/.settings/*.prefs", watchers.get(5).getGlobPattern().map(Function.identity(), RelativePattern::getPattern));
+		assertEquals("**/gradle.properties", watchers.get(6).getGlobPattern().map(Function.identity(), RelativePattern::getPattern));
+		assertEquals("**/pom.xml", watchers.get(7).getGlobPattern().map(Function.identity(), RelativePattern::getPattern));
+		assertEquals("**/src/**", watchers.get(8).getGlobPattern().map(Function.identity(), RelativePattern::getPattern));
 		IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject("salut");
 		String location = project.getLocation().toString();
 		IJavaProject javaProject = JavaCore.create(project);
 		// for test purposes only
 		removeExclusionPattern(javaProject);
+		JobHelpers.waitForJobsToComplete();
 		File outputDir = new File(new File(location), javaProject.getOutputLocation().removeFirstSegments(1).toOSString());
 		File outputFile = new File(outputDir, "test.properties");
 		String resourceName = location + "/src/main/resources/test.properties";
 		String uri = "file://" + resourceName;
 		File sourceFile = new Path(resourceName).toFile();
 		assertTrue(FileUtils.contentEquals(sourceFile, outputFile));
-		FileUtils.writeStringToFile(sourceFile, TEST_CONTENT);
+		Files.writeString(sourceFile.toPath(), TEST_CONTENT);
 		FileEvent fileEvent = new FileEvent(uri, FileChangeType.Changed);
 		DidChangeWatchedFilesParams params = new DidChangeWatchedFilesParams();
 		params.getChanges().add(fileEvent);
@@ -360,18 +359,12 @@ public class InitHandlerTest extends AbstractProjectsManagerBasedTest {
 		verify(client, times(1)).registerCapability(any());
 		assertEquals("Unexpected watchers:\n" + toString(watchers), 12, newWatchers.size());
 		projectWatchers = newWatchers.subList(9, 12);
-		assertTrue(projectWatchers.get(0).getGlobPattern().endsWith("/TestProject"));
-		assertTrue(projectWatchers.get(1).getGlobPattern().endsWith("/maven/salut"));
-		assertTrue(projectWatchers.get(2).getGlobPattern().endsWith("/gradle/simple-gradle"));
+		assertTrue(projectWatchers.get(0).getGlobPattern().map(Function.identity(), RelativePattern::getPattern).endsWith("/TestProject"));
+		assertTrue(projectWatchers.get(1).getGlobPattern().map(Function.identity(), RelativePattern::getPattern).endsWith("/maven/salut"));
+		assertTrue(projectWatchers.get(2).getGlobPattern().map(Function.identity(), RelativePattern::getPattern).endsWith("/gradle/simple-gradle"));
 
 		newWatchers = watchers.subList(0, 9);
-		Collections.sort(newWatchers, new Comparator<FileSystemWatcher>() {
-
-			@Override
-			public int compare(FileSystemWatcher o1, FileSystemWatcher o2) {
-				return o1.getGlobPattern().compareTo(o2.getGlobPattern());
-			}
-		});
+		Collections.sort(newWatchers, Comparator.comparing(fileSystemWatcher -> fileSystemWatcher.getGlobPattern().map(Function.identity(), RelativePattern::getPattern)));
 		assertEquals(newWatchers, watchers);
 	}
 
@@ -396,13 +389,13 @@ public class InitHandlerTest extends AbstractProjectsManagerBasedTest {
 	}
 
 	private String toString(List<FileSystemWatcher> watchers) {
-		return watchers.stream().map(FileSystemWatcher::getGlobPattern).collect(Collectors.joining("\n"));
+		return watchers.stream().map(FileSystemWatcher::getGlobPattern).map(globPattern -> globPattern.map(Function.identity(), RelativePattern::getPattern)).collect(Collectors.joining("\n"));
 	}
 
 	@Test
 	public void testInitOnSymbolicLinkFolder() throws Exception {
 		ClientPreferences mockCapabilies = mock(ClientPreferences.class);
-		when(mockCapabilies.isWorkspaceChangeWatchedFilesDynamicRegistered()).thenReturn(Boolean.TRUE);
+		Mockito.lenient().when(mockCapabilies.isWorkspaceChangeWatchedFilesDynamicRegistered()).thenReturn(Boolean.TRUE);
 		when(preferenceManager.getClientPreferences()).thenReturn(mockCapabilies);
 
 		File tempDirectory = new File(System.getProperty("java.io.tmpdir"), "/projects_symbolic_link-" + new Random().nextInt(10000));
@@ -410,13 +403,16 @@ public class InitHandlerTest extends AbstractProjectsManagerBasedTest {
 		File targetLinkFolder = new File(tempDirectory, "simple-gradle");
 		File targetFile = copyFiles("gradle/simple-gradle", true);
 		try {
-
-			Files.createSymbolicLink(Paths.get(targetLinkFolder.getPath()), Paths.get(targetFile.getAbsolutePath()));
-
+			try {
+				Files.createSymbolicLink(Paths.get(targetLinkFolder.getAbsolutePath()), Paths.get(targetFile.getAbsolutePath()));
+			} catch (IOException e) {
+				JavaLanguageServerPlugin.logException(e);
+				return;
+			}
 			projectsManager.initializeProjects(Arrays.asList(Path.fromOSString(targetLinkFolder.getAbsolutePath())), null);
 			newEmptyProject();
 			IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject("simple-gradle");
-			String location = project.getLocation().toString();
+			String location = project.getRawLocation().toString();
 			if (Platform.OS_WIN32.equals(Platform.getOS())) {
 				assertEquals(Path.fromOSString(targetLinkFolder.getAbsolutePath()).toString(), location);
 			} else {

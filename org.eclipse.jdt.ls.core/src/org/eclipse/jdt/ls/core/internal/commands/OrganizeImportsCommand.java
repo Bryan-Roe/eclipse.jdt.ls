@@ -33,8 +33,6 @@ import org.eclipse.jdt.core.IPackageFragment;
 import org.eclipse.jdt.core.IPackageFragmentRoot;
 import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.JavaModelException;
-import org.eclipse.jdt.core.dom.CompilationUnit;
-import org.eclipse.jdt.core.manipulation.OrganizeImportsOperation;
 import org.eclipse.jdt.ls.core.internal.ChangeUtil;
 import org.eclipse.jdt.ls.core.internal.IConstants;
 import org.eclipse.jdt.ls.core.internal.JDTUtils;
@@ -45,7 +43,6 @@ import org.eclipse.jdt.ls.core.internal.corrections.InnovationContext;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.CUCorrectionProposal;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.IProposalRelevance;
 import org.eclipse.jdt.ls.core.internal.handlers.OrganizeImportsHandler;
-import org.eclipse.jface.text.IDocument;
 import org.eclipse.lsp4j.CodeActionKind;
 import org.eclipse.lsp4j.WorkspaceEdit;
 import org.eclipse.ltk.core.refactoring.TextChange;
@@ -55,8 +52,7 @@ public class OrganizeImportsCommand {
 
 	public Object organizeImports(List<Object> arguments) throws CoreException {
 		WorkspaceEdit edit = new WorkspaceEdit();
-		if (arguments != null && !arguments.isEmpty() && arguments.get(0) instanceof String) {
-			final String fileUri = (String) arguments.get(0);
+		if (arguments != null && !arguments.isEmpty() && arguments.get(0) instanceof String fileUri) {
 			final IPath rootPath = ResourceUtils.filePathFromURI(fileUri);
 			if (rootPath == null) {
 				throw new CoreException(new Status(IStatus.ERROR, IConstants.PLUGIN_ID, "URI is not found"));
@@ -176,20 +172,10 @@ public class OrganizeImportsCommand {
 	public void organizeImportsInCompilationUnit(ICompilationUnit unit, WorkspaceEdit rootEdit) {
 		try {
 			InnovationContext context = new InnovationContext(unit, 0, unit.getBuffer().getLength() - 1);
-			CUCorrectionProposal proposal = new CUCorrectionProposal("OrganizeImports", CodeActionKind.SourceOrganizeImports, unit, null, IProposalRelevance.ORGANIZE_IMPORTS) {
-				@Override
-				protected void addEdits(IDocument document, TextEdit editRoot) throws CoreException {
-					CompilationUnit astRoot = context.getASTRoot();
-					OrganizeImportsOperation op = new OrganizeImportsOperation(unit, astRoot, true, false, true, null);
-					TextEdit edit = op.createTextEdit(null);
-					TextEdit staticEdit = OrganizeImportsHandler.wrapStaticImports(edit, astRoot, unit);
-					if (staticEdit.getChildrenSize() > 0) {
-						editRoot.addChild(staticEdit);
-					}
-				}
-			};
-
-			addWorkspaceEdit(unit, proposal, rootEdit);
+			CUCorrectionProposal proposal = OrganizeImportsHandler.getOrganizeImportsProposal("OrganizeImports", CodeActionKind.SourceOrganizeImports, unit, IProposalRelevance.ORGANIZE_IMPORTS, context.getASTRoot(), false, false);
+			if (proposal != null) {
+				addWorkspaceEdit(unit, proposal, rootEdit);
+			}
 		} catch (CoreException e) {
 			JavaLanguageServerPlugin.logException("Problem organize imports ", e);
 		}
@@ -197,8 +183,7 @@ public class OrganizeImportsCommand {
 
 	private void collectCompilationUnits(Object element, Collection<IJavaElement> result, String packagePrefix) {
 		try {
-			if (element instanceof IJavaElement) {
-				IJavaElement elem = (IJavaElement) element;
+			if (element instanceof IJavaElement elem) {
 				if (elem.exists()) {
 					switch (elem.getElementType()) {
 						case IJavaElement.TYPE:

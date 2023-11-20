@@ -20,7 +20,7 @@ import org.eclipse.jface.text.templates.SimpleTemplateVariableResolver;
 import org.eclipse.jface.text.templates.TemplateContext;
 
 public class CodeTemplatePreferences {
-    private static final String CODETEMPLATES_PREFIX = "org.eclipse.jdt.ui.text.codetemplates."; //$NON-NLS-1$
+	private static final String CODETEMPLATES_PREFIX = "org.eclipse.jdt.ui.text.codetemplates."; //$NON-NLS-1$
 	public static final String COMMENT_SUFFIX = "comment"; //$NON-NLS-1$
 	public static final String BODY_SUFFIX = "body"; //$NON-NLS-1$
 	private static final String BLOCK_SUFFIX = "block"; //$NON-NLS-1$
@@ -53,6 +53,12 @@ public class CodeTemplatePreferences {
 	 * A named preference that defines the template for method body content
 	 */
 	public static final String CODETEMPLATE_METHODBODY = CODETEMPLATES_PREFIX + "method" + BODY_SUFFIX; //$NON-NLS-1$
+
+	/**
+	 * A named preference that defines the template for method body content when
+	 * method is a super implementation
+	 */
+	public static final String CODETEMPLATE_METHODBODY_SUPER = CODETEMPLATES_PREFIX + "method" + BODY_SUFFIX + "alternative"; //$NON-NLS-1$
 
 	/**
 	 * A named preference that defines the template for delegate method comments
@@ -113,7 +119,7 @@ public class CodeTemplatePreferences {
 	/**
 	 * Default value for new type
 	 */
-	public static final String CODETEMPLATE_NEWTYPE_DEFAULT = "${filecomment}\n${package_declaration}\n\n${typecomment}\n${type_declaration}";
+	public static final String CODETEMPLATE_NEWTYPE_DEFAULT = "${filecomment}${package_declaration}\n\n${typecomment}\n${type_declaration}";
 	/**
 	 * Default value for field comments
 	 */
@@ -132,8 +138,7 @@ public class CodeTemplatePreferences {
 	/**
 	 * Default value for override comments
 	 */
-	public static final String CODETEMPLATE_OVERRIDECOMMENT_DEFAULT = "/* (non-Javadoc)\n" + " * ${see_to_overridden}\n"
-			+ " */\n";
+	public static final String CODETEMPLATE_OVERRIDECOMMENT_DEFAULT = "";
 
 	/**
 	 * Default value for method comments
@@ -173,7 +178,13 @@ public class CodeTemplatePreferences {
 	/**
 	 * Default value from method body content
 	 */
-	public static final String CODETEMPLATE_METHODBODY_DEFAULT = "// ${todo} Auto-generated method stub\n${body_statement}";
+	public static final String CODETEMPLATE_METHODBODY_DEFAULT = "// ${todo} Auto-generated method stub\nthrow new UnsupportedOperationException(\"Unimplemented method \'${enclosing_method}\'\");";
+
+	/**
+	 * Default value from method body content when method is a super implementation
+	 */
+	public static final String CODETEMPLATE_METHODBODY_SUPER_DEFAULT = "// ${todo} Auto-generated method stub\n${body_statement}";
+
 	/**
 	 * Default value for catch body content
 	 */
@@ -182,28 +193,28 @@ public class CodeTemplatePreferences {
 	/**
 	 * Default value for class snippet body content
 	 */
-	public static final String CODETEMPLATE_CLASSSNIPPET_DEFAULT = "${package_header}class ${type_name} {\n\n\t${cursor}\n}";
+	public static final String CODETEMPLATE_CLASSSNIPPET_DEFAULT = "${filecomment}${package_header}class ${type_name} {\n\n\t${cursor}\n}";
 
 	/**
 	 * Default value for public class snippet body content
 	 */
-	public static final String CODETEMPLATE_CLASSSNIPPET_PUBLIC = "${package_header}/**\n * ${type_name}\n */\npublic class ${type_name} {\n\n\t${cursor}\n}";
+	public static final String CODETEMPLATE_CLASSSNIPPET_PUBLIC = "${filecomment}${package_header}/**\n * ${type_name}\n */\npublic class ${type_name} {\n\n\t${cursor}\n}";
 	/**
 	 * Default value for interface snippet body content
 	 */
-	public static final String CODETEMPLATE_INTERFACESNIPPET_DEFAULT = "${package_header}interface ${type_name} {\n\n\t${cursor}\n}";
+	public static final String CODETEMPLATE_INTERFACESNIPPET_DEFAULT = "${filecomment}${package_header}interface ${type_name} {\n\n\t${cursor}\n}";
 	/**
 	 * Default value for public interface snippet body content
 	 */
-	public static final String CODETEMPLATE_INTERFACESNIPPET_PUBLIC = "${package_header}/**\n * ${type_name}\n */\npublic interface ${type_name} {\n\n\t${cursor}\n}";
+	public static final String CODETEMPLATE_INTERFACESNIPPET_PUBLIC = "${filecomment}${package_header}/**\n * ${type_name}\n */\npublic interface ${type_name} {\n\n\t${cursor}\n}";
 	/**
 	 * Default value for record snippet body content
 	 */
-	public static final String CODETEMPLATE_RECORDSNIPPET_DEFAULT = "${package_header}record ${type_name}(${cursor}) {\n}";
+	public static final String CODETEMPLATE_RECORDSNIPPET_DEFAULT = "${filecomment}${package_header}record ${type_name}(${cursor}) {\n}";
 	/**
 	 * Default value for public record snippet body content
 	 */
-	public static final String CODETEMPLATE_RECORDSNIPPET_PUBLIC = "${package_header}/**\n * ${type_name}\n */\npublic record ${type_name}(${cursor}) {\n}";
+	public static final String CODETEMPLATE_RECORDSNIPPET_PUBLIC = "${filecomment}${package_header}/**\n * ${type_name}\n */\npublic record ${type_name}(${cursor}) {\n}";
 
 	public static class Month extends SimpleTemplateVariableResolver {
 		public Month() {

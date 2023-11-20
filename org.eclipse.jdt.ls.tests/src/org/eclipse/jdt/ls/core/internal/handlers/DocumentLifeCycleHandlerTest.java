@@ -12,6 +12,7 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.internal.handlers;
 
+import static java.util.Map.entry;
 import static org.eclipse.jdt.ls.core.internal.Lsp4jAssertions.assertRange;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -23,15 +24,19 @@ import static org.mockito.Mockito.when;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.apache.commons.io.FileUtils;
 import org.eclipse.core.resources.IFolder;
+import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.runtime.IPath;
@@ -67,6 +72,7 @@ import org.eclipse.lsp4j.DidChangeTextDocumentParams;
 import org.eclipse.lsp4j.DidCloseTextDocumentParams;
 import org.eclipse.lsp4j.DidOpenTextDocumentParams;
 import org.eclipse.lsp4j.DidSaveTextDocumentParams;
+import org.eclipse.lsp4j.Position;
 import org.eclipse.lsp4j.PublishDiagnosticsParams;
 import org.eclipse.lsp4j.Range;
 import org.eclipse.lsp4j.TextDocumentContentChangeEvent;
@@ -226,7 +232,8 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.isWorkingCopy());
 		assertEquals(false, cu1.hasUnsavedChanges());
 		assertNewProblemReported(new ExpectedProblemReport(cu1, 0));
-		assertEquals(1, getCacheSize());
+		// https://github.com/eclipse/eclipse.jdt.ls/pull/2535
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(1);
 
 		buf = new StringBuilder();
@@ -240,7 +247,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.isWorkingCopy());
 		assertEquals(true, cu1.hasUnsavedChanges());
 		assertNewProblemReported(new ExpectedProblemReport(cu1, 1));
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(1);
 
 		saveDocument(cu1);
@@ -248,7 +255,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.isWorkingCopy());
 		assertEquals(false, cu1.hasUnsavedChanges());
 		assertNewProblemReported();
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(0);
 
 		closeDocument(cu1);
@@ -280,7 +287,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.isWorkingCopy());
 		assertEquals(false, cu1.hasUnsavedChanges());
 		assertNewProblemReported(new ExpectedProblemReport(cu1, 1));
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(1);
 
 		buf = new StringBuilder();
@@ -296,7 +303,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.isWorkingCopy());
 		assertEquals(true, cu1.hasUnsavedChanges());
 		assertNewProblemReported(new ExpectedProblemReport(cu1, 0));
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(1);
 
 		closeDocument(cu1);
@@ -335,6 +342,37 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 	}
 
 	@Test
+	public void testNonJdtError() throws Exception {
+		importProjects("eclipse/hello");
+		IProject project = WorkspaceHelper.getProject("hello");
+		URI uri = project.getFile("/src/org/sample/Foo.java").getRawLocationURI();
+		ICompilationUnit cu = JDTUtils.resolveCompilationUnit(uri);
+		IResource resource = cu.getCorrespondingResource();
+		// @formatter:off
+		resource.createMarker("testNonJdtError", Map.ofEntries(
+				entry(IMarker.MESSAGE, "Non-JDT errors."),
+				entry(IMarker.SEVERITY, IMarker.SEVERITY_ERROR)));
+		// @formatter:off
+		String source = Files.readString(FileUtils.toFile(uri.toURL()).toPath());
+		openDocument(cu, source, 1);
+		Job.getJobManager().join(DocumentLifeCycleHandler.DOCUMENT_LIFE_CYCLE_JOBS, monitor);
+		assertEquals(project, cu.getJavaProject().getProject());
+		assertEquals(source, cu.getSource());
+		List<PublishDiagnosticsParams> diagnosticReports = getClientRequests("publishDiagnostics");
+		assertEquals(1, diagnosticReports.size());
+		PublishDiagnosticsParams diagParam = diagnosticReports.get(0);
+		assertEquals(1, diagParam.getDiagnostics().size());
+		closeDocument(cu);
+		Job.getJobManager().join(DocumentLifeCycleHandler.DOCUMENT_LIFE_CYCLE_JOBS, monitor);
+		diagnosticReports = getClientRequests("publishDiagnostics");
+		assertEquals(1, diagnosticReports.size());
+		diagParam = diagnosticReports.get(0);
+		assertEquals(1, diagParam.getDiagnostics().size());
+		Diagnostic diagnostic = diagParam.getDiagnostics().get(0);
+		assertEquals("Non-JDT errors.", diagnostic.getMessage());
+	}
+
+	@Test
 	public void testIncrementalChangeDocument() throws Exception {
 		IJavaProject javaProject = newEmptyProject();
 		IPackageFragmentRoot sourceFolder = javaProject.getPackageFragmentRoot(javaProject.getProject().getFolder("src"));
@@ -360,7 +398,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.isWorkingCopy());
 		assertEquals(false, cu1.hasUnsavedChanges());
 		assertNewProblemReported(new ExpectedProblemReport(cu1, 0));
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(1);
 
 		buf = new StringBuilder();
@@ -372,7 +410,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.isWorkingCopy());
 		assertEquals(true, cu1.hasUnsavedChanges());
 		assertNewProblemReported(new ExpectedProblemReport(cu1, 1));
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(1);
 
 		saveDocument(cu1);
@@ -380,7 +418,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.isWorkingCopy());
 		assertEquals(false, cu1.hasUnsavedChanges());
 		assertNewProblemReported();
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(0);
 
 		closeDocument(cu1);
@@ -426,7 +464,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu2.isWorkingCopy());
 		assertEquals(false, cu2.hasUnsavedChanges());
 		assertNewProblemReported(new ExpectedProblemReport(cu2, 1));
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(1);
 
 		openDocument(cu1, cu1.getSource(), 1);
@@ -435,8 +473,8 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(false, cu1.hasUnsavedChanges());
 		assertEquals(true, cu2.isWorkingCopy());
 		assertEquals(false, cu2.hasUnsavedChanges());
-		assertNewProblemReported(new ExpectedProblemReport(cu2, 1), new ExpectedProblemReport(cu1, 0));
-		assertEquals(1, getCacheSize());
+		assertNewProblemReported(new ExpectedProblemReport(cu1, 0));
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(2);
 
 		buf = new StringBuilder();
@@ -451,9 +489,13 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.hasUnsavedChanges());
 		assertEquals(true, cu2.isWorkingCopy());
 		assertEquals(false, cu2.hasUnsavedChanges());
-		assertNewProblemReported(new ExpectedProblemReport(cu2, 0), new ExpectedProblemReport(cu1, 0));
-		assertEquals(1, getCacheSize());
+		assertNewProblemReported(new ExpectedProblemReport(cu1, 0));
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(2);
+
+		closeDocument(cu2);
+		openDocument(cu2, cu2.getSource(), 1);
+		assertNewProblemReported(new ExpectedProblemReport(cu2, 0));
 
 		saveDocument(cu1);
 
@@ -462,7 +504,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu2.isWorkingCopy());
 		assertEquals(false, cu2.hasUnsavedChanges());
 		assertNewProblemReported();
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(0);
 
 		closeDocument(cu1);
@@ -519,7 +561,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		IProject project = WorkspaceHelper.getProject("hello");
 		URI uri = project.getFile("nopackage/Test2.java").getRawLocationURI();
 		ICompilationUnit cu = JDTUtils.resolveCompilationUnit(uri);
-		String source = FileUtils.readFileToString(FileUtils.toFile(uri.toURL()));
+		String source = Files.readString(FileUtils.toFile(uri.toURL()).toPath());
 		openDocument(cu, source, 1);
 		Job.getJobManager().join(DocumentLifeCycleHandler.DOCUMENT_LIFE_CYCLE_JOBS, monitor);
 		assertEquals(project, cu.getJavaProject().getProject());
@@ -656,7 +698,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		int length = source.length();
 		source = source.replace("org", "org.eclipse");
 		changeDocument(cu, source, 2, JDTUtils.toRange(cu, 0, length));
-		FileUtils.writeStringToFile(file, source);
+		Files.writeString(file.toPath(), source);
 		saveDocument(cu);
 		cu = JDTUtils.resolveCompilationUnit(uri);
 		astRoot = CoreASTProvider.getInstance().getAST(cu, CoreASTProvider.WAIT_YES, new NullProgressMonitor());
@@ -685,7 +727,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		org.mkdir();
 		File file = new File(org, "Bar.java");
 		file.createNewFile();
-		FileUtils.writeStringToFile(file, barContent);
+		Files.writeString(file.toPath(), barContent);
 		ICompilationUnit bar = JDTUtils.resolveCompilationUnit(file.toURI());
 		bar.getResource().refreshLocal(IResource.DEPTH_ONE, null);
 		assertNotNull("Bar doesn't exist", javaProject.findType("org.Bar"));
@@ -694,7 +736,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		URI uri = file.toURI();
 		ICompilationUnit unit = JDTUtils.resolveCompilationUnit(uri);
 		openDocument(unit, "", 1);
-		FileUtils.writeStringToFile(file, fooContent);
+		Files.writeString(file.toPath(), fooContent);
 		changeDocumentFull(unit, fooContent, 1);
 		saveDocument(unit);
 		closeDocument(unit);
@@ -726,7 +768,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		int length = source.length();
 		source = source.replace("org", "org.eclipse");
 		changeDocument(cu, source, 2, JDTUtils.toRange(cu, 0, length));
-		FileUtils.writeStringToFile(file, source);
+		Files.writeString(file.toPath(), source);
 		saveDocument(cu);
 		cu = JDTUtils.resolveCompilationUnit(uri);
 		astRoot = CoreASTProvider.getInstance().getAST(cu, CoreASTProvider.WAIT_YES, new NullProgressMonitor());
@@ -737,7 +779,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		length = source.length();
 		source = source.replace("org.eclipse", "org.eclipse.toto");
 		changeDocument(cu, source, 3, JDTUtils.toRange(cu, 0, length));
-		FileUtils.writeStringToFile(file, source);
+		Files.writeString(file.toPath(), source);
 		saveDocument(cu);
 		cu = JDTUtils.resolveCompilationUnit(uri);
 		astRoot = CoreASTProvider.getInstance().getAST(cu, CoreASTProvider.WAIT_YES, new NullProgressMonitor());
@@ -765,7 +807,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		assertEquals(true, cu1.isWorkingCopy());
 		assertEquals(false, cu1.hasUnsavedChanges());
 		assertNewProblemReported(new ExpectedProblemReport(cu1, 1));
-		assertEquals(1, getCacheSize());
+		assertEquals(0, getCacheSize());
 		assertNewASTsCreated(1);
 
 		StringBuilder buf2 = new StringBuilder();
@@ -801,6 +843,30 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		DocumentMonitor documentMonitor = lifeCycleHandler.new DocumentMonitor(JDTUtils.toURI(cu));
 		documentMonitor.checkChanged();
 		changeDocumentFull(cu, content, 2);
+		assertChanged(documentMonitor);
+		closeDocument(cu);
+	}
+
+	@Test
+	public void testDocumentMonitorClosedDocument() throws Exception {
+		IJavaProject javaProject = newEmptyProject();
+		IPackageFragmentRoot sourceFolder = javaProject.getPackageFragmentRoot(javaProject.getProject().getFolder("src"));
+		IPackageFragment fooPackage = sourceFolder.createPackageFragment("foo", false, null);
+
+		String content = "package foo;\n";
+		ICompilationUnit cu = fooPackage.createCompilationUnit("Foo.java", content, false, null);
+
+		DocumentMonitor documentMonitorBeforeOpen = lifeCycleHandler.new DocumentMonitor(JDTUtils.toURI(cu));
+		openDocument(cu, content, 1);
+		changeDocumentFull(cu, content, 2);
+		assertChanged(documentMonitorBeforeOpen); // Version changed (null -> 2)
+		closeDocument(cu);
+
+		DocumentMonitor documentMonitorAfterClose = lifeCycleHandler.new DocumentMonitor(JDTUtils.toURI(cu));
+		documentMonitorAfterClose.checkChanged(); // Version not changed (null -> null)
+	}
+
+	private void assertChanged(DocumentMonitor documentMonitor) {
 		try {
 			documentMonitor.checkChanged();
 			fail("Should have thrown ResponseErrorException");
@@ -808,7 +874,6 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		catch (ResponseErrorException e) {
 			assertEquals(e.getResponseError().getCode(), -32801); // ContentModified error code
 		}
-		closeDocument(cu);
 	}
 
 	private File createTempFile(File parent, String fileName, String content) throws IOException {
@@ -816,7 +881,7 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		File file = new File(parent, fileName);
 		file.deleteOnExit();
 		file.createNewFile();
-		FileUtils.writeStringToFile(file, content);
+		Files.writeString(file.toPath(), content);
 		return file;
 	}
 
@@ -909,10 +974,12 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 		List<PublishDiagnosticsParams> diags = getClientRequests("publishDiagnostics");
 		assertEquals(expectedReports.length, diags.size());
 
-		for (int i = 0; i < expectedReports.length; i++) {
-			PublishDiagnosticsParams diag = diags.get(i);
-			ExpectedProblemReport expected = expectedReports[i];
-			assertEquals(JDTUtils.toURI(expected.cu), diag.getUri());
+		for (ExpectedProblemReport expected : expectedReports) {
+			String uri = JDTUtils.toURI(expected.cu);
+			List<PublishDiagnosticsParams> filteredList =
+					diags.stream().filter(d -> d.getUri().equals(uri)).collect(Collectors.toList());
+			assertTrue(filteredList.size() == 1);
+			PublishDiagnosticsParams diag = filteredList.get(0);
 			if (expected.problemCount != diag.getDiagnostics().size()) {
 				String message = "";
 				for (Diagnostic d : diag.getDiagnostics()) {
@@ -920,7 +987,6 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 				}
 				assertEquals(message, expected.problemCount, diag.getDiagnostics().size());
 			}
-
 		}
 		diags.clear();
 	}
@@ -932,5 +998,30 @@ public class DocumentLifeCycleHandlerTest extends AbstractProjectsManagerBasedTe
 
 	private int getCacheSize() {
 		return (sharedASTProvider.getCachedAST() != null) ? 1 : 0;
+	}
+
+	@Test
+	public void testDiagnosticsOnExternalFileWithInternalProject() throws Exception {
+		Mockito.lenient().when(clientPreferences.skipProjectConfiguration()).thenReturn(true);
+		preferences.setValidateAllOpenBuffersOnChanges(true);
+		when(preferenceManager.getPreferences()).thenReturn(preferences);
+		Path filePath = Files.createTempDirectory("testDiagnosticsOnExternalFileWithInternalProject").resolve("A.java");
+		try {
+			String content = "error public class A { }";
+			Files.writeString(filePath, content); 
+			lifeCycleHandler.didOpen(new DidOpenTextDocumentParams(new TextDocumentItem(filePath.toUri().toString(), "java", 0, content)));
+			List<PublishDiagnosticsParams> diagnosticReports = getClientRequests("publishDiagnostics");
+			assertFalse("No diagnostics sent on open", diagnosticReports.isEmpty());
+			List<Diagnostic> diagnostics = diagnosticReports.get(0).getDiagnostics();
+			assertTrue("First diagnostics not sent", diagnostics.stream().map(Diagnostic::getMessage).anyMatch(message -> message.contains("error on token \"error\"")));
+			lifeCycleHandler.didChange(new DidChangeTextDocumentParams(new VersionedTextDocumentIdentifier(filePath.toUri().toString(), 0), List.of(new TextDocumentContentChangeEvent(new Range(new Position(0, 0), new Position(0, 0)), "another"))));
+			diagnosticReports = getClientRequests("publishDiagnostics");
+			assertEquals("No diagnostics sent on change", 2, diagnosticReports.size());
+			diagnostics = diagnosticReports.get(1).getDiagnostics();
+			assertTrue("diagnostics not updated upon edit", diagnostics.stream().map(Diagnostic::getMessage).anyMatch(message -> message.contains("error on token \"anothererror\"")));
+		} finally {
+			Files.delete(filePath);
+			Files.delete(filePath.getParent());
+		}
 	}
 }

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016-2020 Red Hat Inc. and others.
+ * Copyright (c) 2016-2022 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -25,6 +25,7 @@ import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.debug.core.ILaunchConfiguration;
 import org.eclipse.jdt.core.IClassFile;
 import org.eclipse.jdt.core.IJavaProject;
+import org.eclipse.jdt.launching.IVMInstall;
 import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager.CHANGE_TYPE;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
@@ -41,6 +42,13 @@ public interface IBuildSupport {
 
 	default boolean isBuildLikeFileName(String fileName) {
 		return false;
+	}
+
+	/**
+	 * Implementors can put preparation work into this method. This method will be invoked before {@code update(...)}.
+	 */
+	default void onWillUpdate(Collection<IProject> projects, IProgressMonitor monitor) throws CoreException {
+		// do nothing
 	}
 
 	/**
@@ -81,6 +89,13 @@ public interface IBuildSupport {
 		return false;
 	}
 
+	/**
+	 * Check if the build support for the specified project depends on the default VM.
+	 */
+	default boolean useDefaultVM(IProject project, IVMInstall defaultVM) {
+		return false;
+	}
+
 	default void refresh(IResource resource, CHANGE_TYPE changeType, IProgressMonitor monitor) throws CoreException {
 		if (resource == null) {
 			return;
@@ -88,7 +103,8 @@ public interface IBuildSupport {
 		if (changeType == CHANGE_TYPE.DELETED) {
 			if (IJavaProject.CLASSPATH_FILE_NAME.equals(resource.getName())) {
 				IProject project = resource.getProject();
-				if (ProjectUtils.isJavaProject(project)) {
+				if (ProjectUtils.isJavaProject(project) && (resource.equals(project.getFile(IJavaProject.CLASSPATH_FILE_NAME))
+						|| resource.getProjectRelativePath().segmentCount() == 1)) {
 					ProjectUtils.removeJavaNatureAndBuilder(project, monitor);
 					update(project, true, monitor);
 				}

@@ -24,14 +24,23 @@ import static org.mockito.Mockito.when;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
+import org.apache.maven.settings.Settings;
+import org.eclipse.core.runtime.CoreException;
+import org.eclipse.core.runtime.preferences.DefaultScope;
+import org.eclipse.core.runtime.preferences.IEclipsePreferences;
 import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.formatter.DefaultCodeFormatterConstants;
 import org.eclipse.jdt.core.manipulation.JavaManipulation;
 import org.eclipse.jdt.internal.core.manipulation.CodeTemplateContextType;
 import org.eclipse.jface.text.templates.Template;
+import org.eclipse.m2e.core.MavenPlugin;
 import org.eclipse.m2e.core.embedder.IMavenConfiguration;
+import org.eclipse.m2e.core.internal.IMavenConstants;
+import org.eclipse.m2e.core.internal.preferences.MavenPreferenceConstants;
+import org.eclipse.m2e.core.lifecyclemapping.model.PluginExecutionAction;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -65,6 +74,7 @@ public class PreferenceManagerTest {
 		reset(mavenConfig);
 		when(mavenConfig.getUserSettingsFile()).thenReturn(path);
 		when(mavenConfig.getNotCoveredMojoExecutionSeverity()).thenReturn("ignore");
+		when(mavenConfig.getDefaultMojoExecutionAction()).thenReturn(PluginExecutionAction.ignore);
 		preferenceManager.update(preferences);
 		verify(mavenConfig, never()).setUserSettingsFile(anyString());
 
@@ -102,14 +112,14 @@ public class PreferenceManagerTest {
 
 	@Test
 	public void testInitialize() throws Exception {
-		preferenceManager.initialize();
+		PreferenceManager.initialize();
 		assertEquals(JavaCore.ENABLED, JavaCore.getOptions().get(JavaCore.CODEASSIST_VISIBILITY_CHECK));
 		assertEquals(JavaCore.IGNORE, JavaCore.getOptions().get(JavaCore.COMPILER_PB_UNHANDLED_WARNING_TOKEN));
 	}
 
 	@Test
 	public void testPreferencesChangeListener() throws Exception {
-		preferenceManager.initialize();
+		PreferenceManager.initialize();
 		boolean called[] = new boolean[1];
 		called[0] = false;
 		IPreferencesChangeListener listener = new IPreferencesChangeListener() {
@@ -132,7 +142,7 @@ public class PreferenceManagerTest {
 
 	@Test
 	public void testUpdateFileHeaderTemplate() {
-		preferenceManager.initialize();
+		PreferenceManager.initialize();
 
 		Template template = JavaManipulation.getCodeTemplateStore().findTemplateById(CodeTemplateContextType.FILECOMMENT_ID);
 		assertNotNull(template);
@@ -149,7 +159,7 @@ public class PreferenceManagerTest {
 
 	@Test
 	public void testUpdateTypeCommentTemplate() {
-		preferenceManager.initialize();
+		PreferenceManager.initialize();
 
 		Template template = JavaManipulation.getCodeTemplateStore().findTemplateById(CodeTemplateContextType.TYPECOMMENT_ID);
 		assertNotNull(template);
@@ -166,7 +176,7 @@ public class PreferenceManagerTest {
 
 	@Test
 	public void testUpdateNewTypeTemplate() {
-		preferenceManager.initialize();
+		PreferenceManager.initialize();
 
 		Template template = JavaManipulation.getCodeTemplateStore().findTemplateById(CodeTemplateContextType.NEWTYPE_ID);
 		assertNotNull(template);
@@ -175,7 +185,7 @@ public class PreferenceManagerTest {
 
 	@Test
 	public void testInsertSpacesTabSize() {
-		preferenceManager.initialize();
+		PreferenceManager.initialize();
 		Preferences preferences = new Preferences();
 		preferenceManager.update(preferences);
 		assertTrue(preferenceManager.getPreferences().isInsertSpaces());
@@ -185,5 +195,98 @@ public class PreferenceManagerTest {
 		assertEquals(4, Integer.valueOf(tabSize).intValue());
 		String insertSpaces = eclipseOptions.get(DefaultCodeFormatterConstants.FORMATTER_TAB_CHAR);
 		assertEquals(JavaCore.SPACE, insertSpaces);
+	}
+
+	@Test
+	public void testMavenOffline() {
+		IEclipsePreferences store = DefaultScope.INSTANCE.getNode(IMavenConstants.PLUGIN_ID);
+
+		try {
+			PreferenceManager.initialize();
+			Preferences preferences = new Preferences();
+			preferenceManager.update(preferences);
+			assertFalse(preferenceManager.getPreferences().isMavenOffline());
+			assertFalse(store.getBoolean(MavenPreferenceConstants.P_OFFLINE, false));
+			preferences.setMavenOffline(true);
+			preferenceManager.update(preferences);
+			assertTrue(preferenceManager.getPreferences().isMavenOffline());
+			assertTrue(store.getBoolean(MavenPreferenceConstants.P_OFFLINE, false));
+		} finally {
+			Preferences preferences = new Preferences();
+			preferenceManager.update(preferences);
+			assertFalse(store.getBoolean(MavenPreferenceConstants.P_OFFLINE, false));
+		}
+	}
+
+	@Test
+	public void testMavenDisableTestFlag() throws Exception {
+		try {
+			PreferenceManager.initialize();
+			Preferences preferences = new Preferences();
+			preferenceManager.update(preferences);
+			assertFalse(preferenceManager.getPreferences().isMavenDisableTestClasspathFlag());
+			assertFalse(getDisableTestFlag());
+			preferences.setMavenDisableTestClasspathFlag(true);
+			preferenceManager.update(preferences);
+			assertTrue(preferenceManager.getPreferences().isMavenDisableTestClasspathFlag());
+			assertTrue(getDisableTestFlag());
+		} finally {
+			Preferences preferences = new Preferences();
+			preferenceManager.update(preferences);
+			assertFalse(preferenceManager.getPreferences().isMavenDisableTestClasspathFlag());
+			assertFalse(getDisableTestFlag());
+		}
+	}
+
+	private boolean getDisableTestFlag() throws CoreException {
+		Settings mavenSettings = MavenPlugin.getMaven().getSettings();
+		boolean disableTest = false;
+		List<String> activeProfilesIds = mavenSettings.getActiveProfiles();
+		for (org.apache.maven.settings.Profile settingsProfile : mavenSettings.getProfiles()) {
+			if ((settingsProfile.getActivation() != null && settingsProfile.getActivation().isActiveByDefault()) || activeProfilesIds.contains(settingsProfile.getId())) {
+				if ("true".equals(settingsProfile.getProperties().get(StandardPreferenceManager.M2E_DISABLE_TEST_CLASSPATH_FLAG))) {
+					disableTest = true;
+					break;
+				}
+			}
+		}
+		return disableTest;
+	}
+
+	@Test
+	public void testMavenDefaultMojoExecution() throws Exception {
+		try {
+			PreferenceManager.initialize();
+			Preferences preferences = new Preferences();
+			preferenceManager.update(preferences);
+			assertEquals("ignore", preferenceManager.getPreferences().getMavenDefaultMojoExecutionAction());
+			preferences.setMavenDefaultMojoExecutionAction("warn");
+			preferenceManager.update(preferences);
+			assertEquals("warn", preferenceManager.getPreferences().getMavenDefaultMojoExecutionAction());
+			preferences.setMavenDefaultMojoExecutionAction("unknown");
+			preferenceManager.update(preferences);
+			assertEquals("ignore", preferenceManager.getPreferences().getMavenDefaultMojoExecutionAction());
+		} finally {
+			Preferences preferences = new Preferences();
+			preferenceManager.update(preferences);
+			assertEquals("ignore", preferenceManager.getPreferences().getMavenDefaultMojoExecutionAction());
+		}
+	}
+
+	@Test
+	public void testTelemetrySettings() throws Exception {
+		try {
+			PreferenceManager.initialize();
+			Preferences preferences = new Preferences(); // default is disabled
+			preferenceManager.update(preferences);
+			assertEquals(false, preferenceManager.getPreferences().isTelemetryEnabled());
+			preferences.setTelemetryEnabled(true);
+			preferenceManager.update(preferences);
+			assertEquals(true, preferenceManager.getPreferences().isTelemetryEnabled());
+		} finally {
+			Preferences preferences = new Preferences();
+			preferenceManager.update(preferences);
+			assertEquals(false, preferenceManager.getPreferences().isTelemetryEnabled());
+		}
 	}
 }

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016-2017 Red Hat Inc. and others.
+ * Copyright (c) 2016-2022 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -25,11 +25,14 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -42,6 +45,7 @@ import org.eclipse.buildship.core.GradleDistribution;
 import org.eclipse.buildship.core.SynchronizationResult;
 import org.eclipse.buildship.core.WrapperGradleDistribution;
 import org.eclipse.buildship.core.internal.CorePlugin;
+import org.eclipse.buildship.core.internal.DefaultGradleBuild;
 import org.eclipse.buildship.core.internal.preferences.PersistentModel;
 import org.eclipse.buildship.core.internal.util.gradle.GradleVersion;
 import org.eclipse.core.resources.IFile;
@@ -71,6 +75,7 @@ import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.ResourceUtils;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jdt.ls.core.internal.preferences.Preferences;
+import org.eclipse.jdt.ls.core.internal.preferences.Preferences.FeatureStatus;
 import org.eclipse.jdt.ls.internal.gradle.checksums.ValidationResult;
 import org.eclipse.jdt.ls.internal.gradle.checksums.WrapperValidator;
 import org.eclipse.lsp4j.ExecuteCommandParams;
@@ -117,7 +122,7 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 			+ "If you trust it, please add \n"
 			+ "`{\"sha256\": \"@checksum@\","
 			+ "\n\"allowed\": true}`"
-			+ "\n to the `java.import.gradle.wrapper.checksums` preference."
+			+ "\n to the `java.imports.gradle.wrapper.checksums` preference."
 			+ ""
 			.replaceAll("\n", System.lineSeparator());
 	//@formatter:on
@@ -143,7 +148,7 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 			for (IProject project : ProjectUtils.getAllProjects()) {
 				if (!ProjectUtils.isGradleProject(project)) {
 					String path = project.getLocation().toOSString();
-					gradleDetector.addExclusions(path);
+					gradleDetector.addExclusions(path.replace("\\", "\\\\"));
 				}
 			}
 			directories = gradleDetector.scan(monitor);
@@ -199,6 +204,8 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 		subMonitor.setTaskName(IMPORTING_GRADLE_PROJECTS);
 		JavaLanguageServerPlugin.logInfo(IMPORTING_GRADLE_PROJECTS);
 		subMonitor.worked(1);
+		// run just once at the first project, assuming that all projects are using the same gradle version.
+		inferGradleJavaHome(directories.iterator().next(), monitor);
 		MultiStatus compatibilityStatus = new MultiStatus(IConstants.PLUGIN_ID, -1, "Compatibility issue occurs when importing Gradle projects", null);
 		MultiStatus gradleUpgradeWrapperStatus = new MultiStatus(IConstants.PLUGIN_ID, -1, "Gradle upgrade wrapper", null);
 		for (Path directory : directories) {
@@ -236,6 +243,7 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 		}
 		for (IStatus status : compatibilityStatus.getChildren()) {
 			// only report first compatibility issue
+			JavaLanguageServerPlugin.log(new Status(IStatus.ERROR, status.getPlugin(), status.getMessage(), status.getException()));
 			GradleCompatibilityStatus gradleStatus = ((GradleCompatibilityStatus) status);
 			for (IProject gradleProject : ProjectUtils.getGradleProjects()) {
 				if (URIUtil.sameURI(URI.create(JDTUtils.getFileURI(gradleProject)), URI.create(gradleStatus.getProjectUri()))) {
@@ -243,7 +251,7 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 				}
 			}
 			if (JavaLanguageServerPlugin.getProjectsManager() != null && JavaLanguageServerPlugin.getProjectsManager().getConnection() != null) {
-				GradleCompatibilityInfo info = new GradleCompatibilityInfo(gradleStatus.getProjectUri(), gradleStatus.getMessage(), gradleStatus.getHighestJavaVersion(), GradleUtils.CURRENT_GRADLE);
+				GradleCompatibilityInfo info = new GradleCompatibilityInfo(gradleStatus.getProjectUri(), gradleStatus.getMessage(), gradleStatus.getHighestJavaVersion(), GradleVersion.current().getVersion());
 				EventNotification notification = new EventNotification().withType(EventType.IncompatibleGradleJdkIssue).withData(info);
 				JavaLanguageServerPlugin.getProjectsManager().getConnection().sendEventNotification(notification);
 			}
@@ -267,7 +275,7 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 							IMarker marker = ResourceUtils.createWarningMarker(GRADLE_UPGRADE_WRAPPER_MARKER_ID, wrapperProperties, GRADLE_INVALID_TYPE_CODE_MESSAGE, INVALID_TYPE_CODE_ID, reader.getLineNumber());
 							marker.setAttribute(GRADLE_MARKER_COLUMN_START, 0);
 							marker.setAttribute(GRADLE_MARKER_COLUMN_END, line.length());
-							UpgradeGradleWrapperInfo info = new UpgradeGradleWrapperInfo(gradleStatus.getProjectUri(), GRADLE_INVALID_TYPE_CODE_MESSAGE, GradleUtils.CURRENT_GRADLE);
+							UpgradeGradleWrapperInfo info = new UpgradeGradleWrapperInfo(gradleStatus.getProjectUri(), GRADLE_INVALID_TYPE_CODE_MESSAGE, GradleVersion.current().getVersion());
 							EventNotification notification = new EventNotification().withType(EventType.UpgradeGradleWrapper).withData(info);
 							JavaLanguageServerPlugin.getProjectsManager().getConnection().sendEventNotification(notification);
 							break;
@@ -279,7 +287,37 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 			}
 			break;
 		}
+
+		GradleUtils.synchronizeAnnotationProcessingConfiguration(subMonitor);
+
 		subMonitor.done();
+	}
+
+	private void inferGradleJavaHome(Path projectFolder, IProgressMonitor monitor) {
+		if (StringUtils.isNotBlank(getPreferences().getGradleJavaHome())) {
+			return;
+		}
+
+		File javaHome = getJavaHome(getPreferences());
+		String javaVersion;
+		if (javaHome == null) {
+			javaVersion = System.getProperty("java.version");
+		} else {
+			StandardVMType type = new StandardVMType();
+			javaVersion = type.readReleaseVersion(javaHome);
+		}
+		if (StringUtils.isBlank(javaVersion)) {
+			// return if failed to get java version.
+			return;
+		}
+		GradleVersion gradleVersion = GradleUtils.getGradleVersion(projectFolder, monitor);
+		if (GradleUtils.isIncompatible(gradleVersion, javaVersion)) {
+			String highestJavaVersion = GradleUtils.getHighestSupportedJava(gradleVersion);
+			File javaHomeFile = GradleUtils.getJdkToLaunchDaemon(highestJavaVersion);
+			if (javaHomeFile != null) {
+				getPreferences().setGradleJavaHome(javaHomeFile.getAbsolutePath());
+			}
+		}
 	}
 
 	private IStatus importDir(Path projectFolder, IProgressMonitor monitor) {
@@ -429,15 +467,25 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 	}
 
 	public static BuildConfiguration getBuildConfiguration(Path rootFolder) {
+		return getBuildConfiguration(rootFolder, false);
+	}
+
+	public static BuildConfiguration getBuildConfiguration(Path rootFolder, boolean noDaemon) {
 		GradleDistribution distribution = getGradleDistribution(rootFolder);
 		Preferences preferences = getPreferences();
 		File javaHome = getJavaHome(preferences);
 		File gradleUserHome = getGradleUserHomeFile();
-		List<String> gradleArguments = preferences.getGradleArguments();
+		List<String> gradleArguments = new ArrayList<>();
+		if (noDaemon) {
+			gradleArguments.add("--no-daemon");
+		}
+		gradleArguments.addAll(getGradleInitScriptArgs());
+		gradleArguments.addAll(preferences.getGradleArguments());
 		List<String> gradleJvmArguments = preferences.getGradleJvmArguments();
 		boolean offlineMode = preferences.isImportGradleOfflineEnabled();
+		boolean autoSync = preferences.getUpdateBuildConfigurationStatus().equals(FeatureStatus.automatic);
 		boolean overrideWorkspaceConfiguration = !(distribution instanceof WrapperGradleDistribution) || offlineMode || (gradleArguments != null && !gradleArguments.isEmpty()) || (gradleJvmArguments != null && !gradleJvmArguments.isEmpty())
-				|| gradleUserHome != null || javaHome != null;
+				|| gradleUserHome != null || javaHome != null || autoSync;
 		// @formatter:off
 		BuildConfiguration build = BuildConfiguration.forRootProjectDirectory(rootFolder.toFile())
 				.overrideWorkspaceConfiguration(overrideWorkspaceConfiguration)
@@ -447,9 +495,21 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 				.gradleUserHome(gradleUserHome)
 				.jvmArguments(gradleJvmArguments)
 				.offlineMode(offlineMode)
+				.autoSync(autoSync)
 				.build();
 		// @formatter:on
 		return build;
+	}
+
+	static boolean useDefaultVM() {
+		File javaHome = getGradleJavaHomeFile();
+		if (javaHome == null) {
+			IVMInstall javaDefaultRuntime = JavaRuntime.getDefaultVMInstall();
+			return javaDefaultRuntime != null
+				&& javaDefaultRuntime.getVMRunner(ILaunchManager.RUN_MODE) != null;
+		}
+
+		return false;
 	}
 
 	private static File getJavaHome(Preferences preferences) {
@@ -492,15 +552,11 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 			if (persistentFile.exists()) {
 				long modified = persistentFile.lastModified();
 				if (projectDir.exists()) {
-					File[] files = projectDir.listFiles(new FilenameFilter() {
-
-						@Override
-						public boolean accept(File dir, String name) {
-							if (name != null && GradleBuildSupport.GRADLE_FILE_EXT.matcher(name).matches()) {
-								return new File(dir, name).lastModified() > modified;
-							}
-							return false;
+					File[] files = projectDir.listFiles((FilenameFilter) (dir, name) -> {
+						if (name != null && GradleBuildSupport.GRADLE_FILE_EXT.matcher(name).matches()) {
+							return new File(dir, name).lastModified() > modified;
 						}
+						return false;
 					});
 					shouldSynchronize = files != null && files.length > 0;
 				}
@@ -509,9 +565,39 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 		return shouldSynchronize;
 	}
 
-	public static boolean upgradeGradleVersion(String projectUri, String gradleVersion, IProgressMonitor monitor) {
+	/**
+	 * update the gradle wrapper to the given version
+	 *
+	 * @param projectUri
+	 *                          uri of the project
+	 * @param gradleVersion
+	 *                          the target gradle version
+	 * @param monitor
+	 *                          the progress monitor
+	 * @return the path to the new gradle-wrapper.properties file
+	 *
+	 *         Upgrade the Gradle version in given project uri. The method includes
+	 *         two steps: modify the gradle properties file and execute "wrapper"
+	 *         task.
+	 *
+	 *         If the GradleBuild related to the project exists, we will use that
+	 *         instance to get root project directory, and execute wrapper task.
+	 *         Otherwise, we will directly regard the given uri as project uri, and
+	 *         create a new GradleBuild for that project uri and execute wrapper
+	 *         task.
+	 */
+	public static String upgradeGradleVersion(String projectUri, String gradleVersion, IProgressMonitor monitor) {
 		String newDistributionUrl = String.format("https://services.gradle.org/distributions/gradle-%s-bin.zip", gradleVersion);
 		Path projectFolder = Paths.get(URI.create(projectUri));
+		IProject project = ProjectUtils.getProjectFromUri(projectUri);
+		Optional<GradleBuild> build = GradleCore.getWorkspace().getBuild(project);
+		GradleBuild gradleBuild = null;
+		if (!build.isEmpty()) {
+			gradleBuild = build.get();
+			if (gradleBuild instanceof DefaultGradleBuild) {
+				projectFolder = ((DefaultGradleBuild) gradleBuild).getBuildConfig().getRootProjectDirectory().toPath();
+			}
+		}
 		File propertiesFile = projectFolder.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.properties").toFile();
 		Properties properties = new Properties();
 		if (propertiesFile.exists()) {
@@ -519,7 +605,7 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 				properties.load(stream);
 				properties.setProperty("distributionUrl", newDistributionUrl);
 			} catch (IOException e) {
-				return false;
+				return null;
 			}
 		} else {
 			properties.setProperty("distributionBase", "GRADLE_USER_HOME");
@@ -528,14 +614,18 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 			properties.setProperty("zipStoreBase", "GRADLE_USER_HOME");
 			properties.setProperty("zipStorePath", "wrapper/dists");
 		}
+		if (monitor.isCanceled()) {
+			return null;
+		}
 		try {
 			properties.store(new FileOutputStream(propertiesFile), null);
 		} catch (Exception e) {
-			return false;
+			return null;
 		}
-		BuildConfiguration build = getBuildConfiguration(projectFolder);
-		GradleBuild gradleBuild = GradleCore.getWorkspace().createBuild(build);
 		try {
+			if (gradleBuild == null) {
+				gradleBuild = GradleCore.getWorkspace().createBuild(getBuildConfiguration(projectFolder));
+			}
 			gradleBuild.withConnection(connection -> {
 				connection.newBuild().forTasks("wrapper").run();
 				return null;
@@ -543,7 +633,45 @@ public class GradleProjectImporter extends AbstractProjectImporter {
 		} catch (Exception e) {
 			// Do nothing
 		}
-		return true;
+
+		return propertiesFile.getAbsolutePath();
+	}
+
+	/**
+	 * Get Gradle init script arguments
+	 */
+	private static List<String> getGradleInitScriptArgs() {
+		List<String> args = new LinkedList<>();
+
+		// Add init script of jdt.ls
+		File initScript = GradleUtils.getGradleInitScript("/gradle/init/init.gradle");
+		addInitScriptToArgs(initScript, args);
+
+		PreferenceManager preferencesManager = JavaLanguageServerPlugin.getPreferencesManager();
+		if (preferencesManager == null) {
+			return args;
+		}
+
+		// Add init script of protobuf support
+		if (preferencesManager.getPreferences().isProtobufSupportEnabled()) {
+			File protobufInitScript =  GradleUtils.getGradleInitScript("/gradle/protobuf/init.gradle");
+			addInitScriptToArgs(protobufInitScript, args);
+		}
+
+		// Add init script of android support
+		if (preferencesManager.getPreferences().isAndroidSupportEnabled()) {
+			File androidInitScript =  GradleUtils.getGradleInitScript("/gradle/android/init.gradle");
+			addInitScriptToArgs(androidInitScript, args);
+		}
+
+		return args;
+	}
+
+	private static void addInitScriptToArgs(File initScript, List<String> args) {
+		if (initScript != null && initScript.exists() && initScript.length() > 0) {
+			args.add("--init-script");
+			args.add(initScript.getAbsolutePath());
+		}
 	}
 
 	@Override
