@@ -1,4 +1,4 @@
-[![Deploy Java project to Azure Function App](https://github.com/Bryan-Roe/eclipse.jdt.ls/actions/workflows/azure-functions-app-java.yml/badge.svg?branch=master&event=pull_request_review_comment)](https://github.com/Bryan-Roe/eclipse.jdt.ls/actions/workflows/azure-functions-app-java.yml)
+[![Deploy Java project to Azure Function App](https://github.com/Bryan-Roe/eclipse.jdt.ls/actions/workflows/azure-functions-app-java.yml/badge.svg?branch=master&event=pull_request_review_comment)]
 
  workflow will build a Java project and deploy it to an Azure Functions App on Windows or Linux when a commit is pushed to your default branch.
 #
